@@ -400,6 +400,46 @@ try {
   }
 }
 
-if ($failure) { throw "Windows installed smoke failed at ${stage}: $failure" }
+function Protect-PublicSmokeText([string]$Text, [int]$Limit = 2400, [switch]$Tail) {
+  if ([string]::IsNullOrEmpty($Text)) { return '' }
+  # Inputs are bounded before reading; also bound callers of the standalone smoke script.
+  if ($Text.Length -gt 1048576) { $Text = $Text.Substring(0, 1048576) }
+  $safe = [regex]::Replace($Text, '\x1b\[[0-?]*[ -/]*[@-~]', '')
+  $safe = [regex]::Replace($safe, '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '')
+  $safe = [regex]::Replace($safe, '(?i)\b(?:https?|wss?)://[^\s<>"'']+', [Text.RegularExpressions.MatchEvaluator]{
+    param($match)
+    try {
+      $url = [Uri]$match.Value
+      $server = $url.GetComponents([UriComponents]::SchemeAndServer, [UriFormat]::UriEscaped)
+      $path = $url.AbsolutePath
+      if ($url.Scheme -in @('ws', 'wss') -or $path -match '(?i)/(?:devtools|token|secret|credential|session|auth|oauth|callback|mcp)(?:/|$)') {
+        $path = '/[redacted]'
+      } else { $path = [regex]::Replace($path, '[A-Za-z0-9_-]{32,}', '[redacted]') }
+      return "$server$path$(if ($url.Query) { '?[redacted]' })$(if ($url.Fragment) { '#[redacted]' })"
+    } catch { return '[redacted URL]' }
+  })
+  $safe = [regex]::Replace($safe, '(?im)(["'']?\b(?:authorization|proxy-authorization|x-api-key|cookie|set-cookie)\b["'']?\s*:\s*)[^\r\n]*', '$1[redacted]')
+  $safe = [regex]::Replace($safe, '(?i)\b(Bearer|Basic|ApiKey)\s+[^\s,;]+', '$1 [redacted]')
+  $safe = [regex]::Replace($safe, '(?i)(\b(?:password|passwd|api[-_]?key|api[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|nonce|credential|client[-_]?secret)\b["'']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|''(?:\\.|[^''\\\r\n])*''|[^\s,;]+)', '$1[redacted]')
+  $safe = [regex]::Replace($safe, '\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+)\b', '[redacted]')
+  if ($safe.Length -gt $Limit) { return $(if ($Tail) { $safe.Substring($safe.Length - $Limit) } else { $safe.Substring(0, $Limit) }) }
+  return $safe
+}
+
+function Write-PublicSmokeAnnotation([string]$Title, [string]$Message, [int]$Limit = 2400, [switch]$Tail) {
+  $safeTitle = [regex]::Replace($Title, '[^A-Za-z0-9._ -]', '_')
+  if ($safeTitle.Length -gt 80) { $safeTitle = $safeTitle.Substring(0, 80) }
+  if ([string]::IsNullOrWhiteSpace($safeTitle)) { $safeTitle = 'Windows smoke evidence' }
+  $safe = Protect-PublicSmokeText -Text $Message -Limit $Limit -Tail:$Tail
+  # Escape workflow commands only after redacting credentials and bounding output.
+  $safe = $safe.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+  Write-Output "::error title=${safeTitle}::$safe"
+}
+
+if ($failure) {
+  $publicFailure = Protect-PublicSmokeText -Text "Windows installed smoke failed at ${stage}: $failure"
+  Write-PublicSmokeAnnotation -Title 'Installed Windows smoke' -Message $publicFailure
+  throw $publicFailure
+}
 if ($cleanupFailures.Count -gt 0) { throw 'Windows installed smoke cleanup failed; see the smoke report' }
 Write-Output "GameBrowser $ExpectedVersion silent install, Local startup, MCP helper, shutdown and uninstall smoke passed"

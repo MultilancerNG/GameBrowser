@@ -1,0 +1,102 @@
+name: Inspect Windows smoke evidence
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/windows-smoke-diagnostics.yml']
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Existing Windows workflow run whose smoke evidence should be inspected
+        default: '43507860678'
+        required: true
+        type: string
+permissions:
+  actions: read
+jobs:
+  evidence:
+    if: github.repository == 'MultilancerNG/GameBrowser'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read existing installed smoke reports
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SMOKE_RUN_ID: ${{ inputs.run_id || '43507860678' }}
+        run: |
+          function Protect-PublicSmokeText([string]$Text, [int]$Limit = 2400, [switch]$Tail) {
+            if ([string]::IsNullOrEmpty($Text)) { return '' }
+            # Inputs are bounded before reading; also bound callers of the standalone smoke script.
+            if ($Text.Length -gt 1048576) { $Text = $Text.Substring(0, 1048576) }
+            $safe = [regex]::Replace($Text, '\x1b\[[0-?]*[ -/]*[@-~]', '')
+            $safe = [regex]::Replace($safe, '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '')
+            $safe = [regex]::Replace($safe, '(?i)\b(?:https?|wss?)://[^\s<>"'']+', [Text.RegularExpressions.MatchEvaluator]{
+              param($match)
+              try {
+                $url = [Uri]$match.Value
+                $server = $url.GetComponents([UriComponents]::SchemeAndServer, [UriFormat]::UriEscaped)
+                $path = $url.AbsolutePath
+                if ($url.Scheme -in @('ws', 'wss') -or $path -match '(?i)/(?:devtools|token|secret|credential|session|auth|oauth|callback|mcp)(?:/|$)') {
+                  $path = '/[redacted]'
+                } else { $path = [regex]::Replace($path, '[A-Za-z0-9_-]{32,}', '[redacted]') }
+                return "$server$path$(if ($url.Query) { '?[redacted]' })$(if ($url.Fragment) { '#[redacted]' })"
+              } catch { return '[redacted URL]' }
+            })
+            $safe = [regex]::Replace($safe, '(?im)(["'']?\b(?:authorization|proxy-authorization|x-api-key|cookie|set-cookie)\b["'']?\s*:\s*)[^\r\n]*', '$1[redacted]')
+            $safe = [regex]::Replace($safe, '(?i)\b(Bearer|Basic|ApiKey)\s+[^\s,;]+', '$1 [redacted]')
+            $safe = [regex]::Replace($safe, '(?i)(\b(?:password|passwd|api[-_]?key|api[-_]?token|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|nonce|credential|client[-_]?secret)\b["'']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|''(?:\\.|[^''\\\r\n])*''|[^\s,;]+)', '$1[redacted]')
+            $safe = [regex]::Replace($safe, '\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+)\b', '[redacted]')
+            if ($safe.Length -gt $Limit) { return $(if ($Tail) { $safe.Substring($safe.Length - $Limit) } else { $safe.Substring(0, $Limit) }) }
+            return $safe
+          }
+          
+          function Write-PublicSmokeAnnotation([string]$Title, [string]$Message, [int]$Limit = 2400, [switch]$Tail) {
+            $safeTitle = [regex]::Replace($Title, '[^A-Za-z0-9._ -]', '_')
+            if ($safeTitle.Length -gt 80) { $safeTitle = $safeTitle.Substring(0, 80) }
+            if ([string]::IsNullOrWhiteSpace($safeTitle)) { $safeTitle = 'Windows smoke evidence' }
+            $safe = Protect-PublicSmokeText -Text $Message -Limit $Limit -Tail:$Tail
+            # Escape workflow commands only after redacting credentials and bounding output.
+            $safe = $safe.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=${safeTitle}::$safe"
+          }
+          
+          $ErrorActionPreference = 'Stop'
+          if ($env:SMOKE_RUN_ID -notmatch '^\d+$') { throw 'Invalid workflow run ID' }
+          gh run download $env:SMOKE_RUN_ID --name gamebrowser-windows-smoke --dir evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Existing smoke evidence download failed' }
+          $files = @(Get-ChildItem -LiteralPath evidence -File | Where-Object {
+            $_.Name -like '*.json' -or $_.Name -like '*.workspace.stderr.txt'
+          } | Sort-Object Name | Select-Object -First 8)
+          foreach ($file in $files) {
+            if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -gt 1048576) {
+              Write-PublicSmokeAnnotation -Title 'Skipped oversized or linked evidence' -Message 'Evidence must be a regular file no larger than 1 MiB'
+              continue
+            }
+            if ($file.Name -like '*.json') {
+              try { $report = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json -Depth 20 }
+              catch { Write-PublicSmokeAnnotation -Title $file.Name -Message 'Smoke evidence was not valid bounded JSON'; continue }
+              if ($report -isnot [PSCustomObject]) {
+                Write-PublicSmokeAnnotation -Title $file.Name -Message 'Smoke evidence must be a JSON object'
+                continue
+              }
+              $stage = if ($report.stage -is [string]) { $report.stage } else { 'unknown' }
+              $success = if ($report.success -is [bool]) { [string]$report.success } else { 'unknown' }
+              $failure = if ($report.error -is [string]) { $report.error } else { '[non-string error omitted]' }
+              Write-PublicSmokeAnnotation -Title $file.Name -Message "Stage: $stage; success: $success; error: $failure"
+              $checks = [ordered]@{}
+              if ($report.checks -is [PSCustomObject]) {
+                foreach ($property in @($report.checks.PSObject.Properties | Sort-Object Name)) {
+                  if ($checks.Count -ge 64) { break }
+                  if ($property.Name -cmatch '^[A-Za-z][A-Za-z0-9_-]{0,63}$' -and $property.Value -is [bool]) {
+                    $checks[$property.Name] = $property.Value
+                  }
+                }
+              }
+              # At most 64 bounded keys and boolean values; never dump arbitrary report fields.
+              Write-Output ("Boolean checks: " + ($checks | ConvertTo-Json -Compress -Depth 2))
+            } else {
+              try { $message = [string](Get-Content -LiteralPath $file.FullName -Raw) }
+              catch { Write-PublicSmokeAnnotation -Title $file.Name -Message 'Smoke stderr evidence could not be read'; continue }
+              if (-not [string]::IsNullOrWhiteSpace($message)) { Write-PublicSmokeAnnotation -Title $file.Name -Message $message -Limit 4000 -Tail }
+            }
+          }
