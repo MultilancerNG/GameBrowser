@@ -64,6 +64,9 @@ import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervis
 import type { PythonRuntime } from "./python-runtime.ts";
 import { runtimeDownloads } from "./runtime-download.ts";
 import { loadServices } from "./services-directory.ts";
+import { createHash } from "node:crypto";
+import { BrowserSyncError, BrowserSyncRuntime, browserSyncSelection, type BrowserSyncLifecycle, type BrowserSyncTarget } from "./browser-sync.ts";
+import { callFirefoxOwner } from "./firefox-runtime.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -602,6 +605,7 @@ function legalAcceptanceIsCurrent(legal: {
 }
 
 export interface UiRuntimeOptions {
+  browserSync?: BrowserSyncLifecycle;
   scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime };
   appConfig?: AppConfigStore;
   paths?: StatePaths;
@@ -622,6 +626,86 @@ export interface UiRuntimeOptions {
   runtimeMode?: "unconfigured" | "local" | "cloud";
 }
 
+const browserSyncRuntimes = new WeakMap<Launcher, BrowserSyncLifecycle>();
+
+function browserSyncLaunchGeneration(launch: NonNullable<ReturnType<ProfileStore["getLaunch"]>>): string {
+  return JSON.stringify([launch.pid, launch.startedAt, launch.debugPort, launch.ws, launch.firefoxOwner?.generation]);
+}
+
+function trustedBrowserEndpoint(value: unknown): string {
+  if (typeof value !== "string") throw new BrowserSyncError("The browser automation endpoint is unavailable", 503);
+  try {
+    const url = new URL(value);
+    if (!["ws:", "wss:", "http:", "https:"].includes(url.protocol)
+      || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.username || url.password) throw new Error();
+    return value;
+  } catch { throw new BrowserSyncError("The browser automation endpoint is invalid", 503); }
+}
+
+function uiBrowserSync(launcher: Launcher, store: ProfileStore, options: UiRuntimeOptions): BrowserSyncLifecycle {
+  if (options.browserSync) return options.browserSync;
+  const existing = browserSyncRuntimes.get(launcher);
+  if (existing) return existing;
+  const cloudMode = () => options.runtimeMode === "cloud" || options.appConfig?.read().mode === "cloud" || !!options.cloudBrowser;
+  const scope = () => {
+    const config = options.appConfig?.read();
+    if (options.runtimeMode && config && config.mode !== options.runtimeMode) return undefined;
+    if (!cloudMode()) return "local";
+    const account = options.cloudConnection?.accountId();
+    if (!account || !options.cloudAuth?.state().authenticated) return undefined;
+    return `cloud:${createHash("sha256").update(`${config?.cloudUrl ?? options.defaultCloudUrl ?? ""}:${account}`).digest("hex")}`;
+  };
+  const authorize = async (ids: readonly string[], requireOpen = false) => {
+    for (const [index, id] of ids.entries()) {
+      const profile = store.getProfile(id);
+      if (!profile && !cloudMode()) throw new BrowserSyncError("A configured browser profile is unavailable", 404);
+      if (index === 0 && profile && profileEngine(profile) !== "chromium") throw new BrowserSyncError("The Admin browser must use Chromium. Firefox profiles can be followers");
+    }
+    if (!cloudMode()) return;
+    if (!scope() || !options.cloudBrowser) throw new BrowserSyncError("Sign in before controlling Cloud browser profiles", 401);
+    const roster = await options.cloudBrowser.listRoster();
+    const profiles = new Map(roster.profiles.map((profile) => [profile.id, profile]));
+    for (const id of ids) {
+      const profile = profiles.get(id);
+      if (!profile || profile.permission !== "edit") throw new BrowserSyncError("Every mirrored Cloud profile needs edit access", 403);
+      if (id === ids[0] && profile.engine === "firefox") throw new BrowserSyncError("The Admin browser must use Chromium. Firefox profiles can be followers");
+      if (requireOpen && (!profile.running || profile.lockedBy)) throw new BrowserSyncError("Waiting for the configured Cloud profiles to reopen on this computer", 409, "browser-unavailable");
+    }
+  };
+  const runtime = new BrowserSyncRuntime({
+    scope,
+    authorizePlan: (ids) => authorize(ids),
+    loadSaved: (key) => store.getBrowserSyncPlan(key),
+    savePlan: (key, plan) => store.setBrowserSyncPlan(key, plan),
+    current: (targets) => targets.every((target) => {
+      const launch = store.getLaunch(target.id);
+      return !!store.getProfile(target.id) && !!launch && browserSyncLaunchGeneration(launch) === target.generation;
+    }),
+    authorize: async (targets) => authorize(targets.map((target) => target.id), true),
+    resolveTargets: async (ids) => {
+      await authorize(ids, true);
+      return Promise.all(ids.map(async (id): Promise<BrowserSyncTarget> => {
+        if (!store.getProfile(id)) throw new BrowserSyncError("A configured browser profile is unavailable", 404);
+        if (!store.getLaunch(id) || !await launcher.certifiedActive(id)) throw new BrowserSyncError("Waiting for the configured browser profiles to reopen on this computer", 409, "browser-unavailable");
+        const profile = store.getProfile(id);
+        const launch = store.getLaunch(id);
+        if (!profile || !launch) throw new BrowserSyncError("A configured browser session changed", 409, "browser-unavailable");
+        const engine = launch.engine ?? profile.engine ?? "chromium";
+        const generation = browserSyncLaunchGeneration(launch);
+        let endpoint = launch.ws;
+        if (engine === "firefox") {
+          if (!launch.firefoxOwner) throw new BrowserSyncError("Waiting for the configured Firefox profile to reopen", 409, "browser-unavailable");
+          const result = await callFirefoxOwner<{ endpoint?: unknown }>(launch.firefoxOwner, "playwright-endpoint", {}).catch(() => { throw new BrowserSyncError("Waiting for the configured Firefox profile to reopen", 409, "browser-unavailable"); });
+          endpoint = trustedBrowserEndpoint(result.endpoint);
+        }
+        return { id, engine, endpoint: trustedBrowserEndpoint(endpoint), generation };
+      }));
+    },
+  });
+  browserSyncRuntimes.set(launcher, runtime);
+  return runtime;
+}
+
 /**
  * Handle a `/ui/api/*` request. Returns null for any other path so the caller
  * can fall through to the AdsPower API handler.
@@ -635,6 +719,34 @@ export async function handleUiRequest(
 ): Promise<Response | null> {
   const { pathname } = new URL(req.url);
   if (!pathname.startsWith("/ui/api/")) return null;
+
+  if (pathname === "/ui/api/browser-sync") {
+    if (remote) return noStoreJson({ ok: false, error: "Browser mirroring is unavailable in legacy Remote mode" }, 400);
+    if (!["GET", "POST", "DELETE"].includes(req.method)) return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    if (req.method !== "GET") {
+      const rejected = rejectUntrustedJsonMutation(req);
+      if (rejected) return rejected;
+    }
+    try {
+      const runtime = uiBrowserSync(launcher, store, options);
+      if (req.method === "GET") return noStoreJson({ ok: true, ...runtime.status() });
+      if (req.method === "DELETE") return noStoreJson({ ok: true, ...await runtime.stop() });
+      const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+      if (body?.action === "resume" && Object.keys(body).length === 1) return noStoreJson({ ok: true, ...await runtime.resume() });
+      if (body?.action === "save" && Object.keys(body).every((key) => key === "action" || key === "saveSession") && typeof body.saveSession === "boolean") {
+        return noStoreJson({ ok: true, ...await runtime.save(body.saveSession) });
+      }
+      if (!body || Object.keys(body).some((key) => key !== "adminId" && key !== "followerIds" && key !== "saveSession") || body.saveSession !== undefined && typeof body.saveSession !== "boolean") {
+        throw new BrowserSyncError("Choose browser profiles; external automation endpoints are not accepted");
+      }
+      const selection = browserSyncSelection(body.adminId, body.followerIds);
+      return noStoreJson({ ok: true, ...await runtime.start(selection.adminId, selection.followerIds, body.saveSession === true) });
+    } catch (error) {
+      const status = error instanceof BrowserSyncError ? error.status : error instanceof CloudApiError ? error.status : 503;
+      const message = error instanceof BrowserSyncError ? error.message : "Browser mirroring is unavailable";
+      return noStoreJson({ ok: false, error: message }, status);
+    }
+  }
 
   if (pathname === "/ui/api/scripts" || pathname.startsWith("/ui/api/scripts/")) {
     const scripts = options.scripts;
@@ -876,6 +988,9 @@ export async function handleUiRequest(
           { status: 503 },
         );
       }
+      if (options.appConfig.read().mode !== body.mode) {
+        await (options.browserSync ?? browserSyncRuntimes.get(launcher))?.stop();
+      }
       const config = options.appConfig.setMode(body.mode, cloudUrl);
       return Response.json({
         ok: true,
@@ -929,7 +1044,10 @@ export async function handleUiRequest(
         resumeLifecycle?: unknown;
         code?: unknown;
       };
-      if (exitsAccount) await options.scripts?.runner.stop();
+      if (exitsAccount) {
+        await (options.browserSync ?? browserSyncRuntimes.get(launcher))?.stop();
+        await options.scripts?.runner.stop();
+      }
       if (pathname === "/ui/api/cloud-auth/signup") {
         if (typeof body.email !== "string" || typeof body.password !== "string") {
           return Response.json({ ok: false, error: "email and password are required" }, { status: 400 });

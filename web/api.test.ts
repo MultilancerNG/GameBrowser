@@ -9,6 +9,11 @@ import {
   revokeCloudConnector,
   cloudWorkspaceReady,
   fetchAppMode,
+  fetchBrowserSync,
+  startBrowserSync,
+  stopBrowserSync,
+  resumeBrowserSync,
+  saveBrowserSyncSession,
   fetchCloudAuth,
   fetchCloudEvents,
   fetchRuntimeDownloads,
@@ -612,4 +617,27 @@ test("roster loads run one at a time and polls never stack on a slow fetch", asy
   poll();
   expect(runs).toBe(3);
   releases.shift()!();
+});
+
+test("following API sends selected IDs and explicit session commands with validated status", async () => {
+  const calls: Array<{ path: string; method: string; body?: string }> = [];
+  const state = { ok: true, active: true, starting: false, waiting: false, saved: false, savedAdminId: null, savedFollowerIds: [], adminId: "admin", followerIds: ["follower"], failedFollowerIds: [], error: null };
+  globalThis.fetch = (async (path: any, init?: RequestInit) => {
+    calls.push({ path: String(path), method: init?.method ?? "GET", ...(init?.body ? { body: String(init.body) } : {}) });
+    return Response.json(state);
+  }) as unknown as typeof fetch;
+  expect((await fetchBrowserSync()).active).toBe(true);
+  await startBrowserSync("admin", ["follower"]);
+  await stopBrowserSync();
+  await saveBrowserSyncSession(true);
+  await resumeBrowserSync();
+  expect(calls).toEqual([
+    { path: "/ui/api/browser-sync", method: "GET" },
+    { path: "/ui/api/browser-sync", method: "POST", body: JSON.stringify({ adminId: "admin", followerIds: ["follower"], saveSession: false }) },
+    { path: "/ui/api/browser-sync", method: "DELETE" },
+    { path: "/ui/api/browser-sync", method: "POST", body: JSON.stringify({ action: "save", saveSession: true }) },
+    { path: "/ui/api/browser-sync", method: "POST", body: JSON.stringify({ action: "resume" }) },
+  ]);
+  globalThis.fetch = (async () => Response.json({ ok: true, active: true })) as unknown as typeof fetch;
+  await expect(fetchBrowserSync()).rejects.toThrow("invalid status");
 });

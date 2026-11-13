@@ -21,6 +21,53 @@ import {
 export type { CloudDiagnosticEvent } from "../cloud-diagnostics.ts";
 export type { RuntimeDownload } from "../runtime-download.ts";
 
+export interface BrowserSyncState {
+  active: boolean;
+  starting: boolean;
+  waiting: boolean;
+  saved: boolean;
+  savedAdminId: string | null;
+  savedFollowerIds: string[];
+  adminId: string | null;
+  followerIds: string[];
+  failedFollowerIds: string[];
+  error: string | null;
+}
+
+async function browserSyncRequest(init?: RequestInit): Promise<BrowserSyncState> {
+  const path = "/ui/api/browser-sync";
+  const response = await fetch(path, init);
+  const body = await apiJson(response, path);
+  if (!response.ok || body.ok !== true) throw new Error(body.error || "Browser following is unavailable");
+  if (typeof body.active !== "boolean" || typeof body.starting !== "boolean" ||
+    typeof body.waiting !== "boolean" || typeof body.saved !== "boolean" ||
+    (body.savedAdminId !== null && typeof body.savedAdminId !== "string") ||
+    !Array.isArray(body.savedFollowerIds) || body.savedFollowerIds.some((id: unknown) => typeof id !== "string") ||
+    (body.adminId !== null && typeof body.adminId !== "string") ||
+    !Array.isArray(body.followerIds) || body.followerIds.some((id: unknown) => typeof id !== "string") ||
+    !Array.isArray(body.failedFollowerIds) || body.failedFollowerIds.some((id: unknown) => typeof id !== "string") ||
+    (body.error !== null && typeof body.error !== "string")) throw new Error("Browser following returned invalid status");
+  return {
+    active: body.active, starting: body.starting, waiting: body.waiting, saved: body.saved,
+    savedAdminId: body.savedAdminId, savedFollowerIds: body.savedFollowerIds, adminId: body.adminId,
+    followerIds: body.followerIds, failedFollowerIds: body.failedFollowerIds, error: body.error,
+  };
+}
+
+export function fetchBrowserSync(): Promise<BrowserSyncState> { return browserSyncRequest(); }
+export function startBrowserSync(adminId: string, followerIds: string[], saveSession = false): Promise<BrowserSyncState> {
+  return browserSyncRequest({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ adminId, followerIds, saveSession }) });
+}
+export function resumeBrowserSync(): Promise<BrowserSyncState> {
+  return browserSyncRequest({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "resume" }) });
+}
+export function saveBrowserSyncSession(saveSession: boolean): Promise<BrowserSyncState> {
+  return browserSyncRequest({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save", saveSession }) });
+}
+export function stopBrowserSync(): Promise<BrowserSyncState> {
+  return browserSyncRequest({ method: "DELETE", headers: { "Content-Type": "application/json" } });
+}
+
 export type HealthStatus = "suspended" | "alive" | "no_data";
 
 export interface UiProfile {

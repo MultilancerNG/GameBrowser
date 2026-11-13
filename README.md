@@ -8,7 +8,7 @@ GameBrowser adapts the complete Apache-2.0 [AliasMode desktop application](https
 
 [Windows releases](https://github.com/MultilancerNG/GameBrowser/releases) · [Source](https://github.com/MultilancerNG/GameBrowser)
 
-The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to `https://multilancerng.github.io/GameBrowser/` after Pages is enabled with **GitHub Actions** as its source. Until a Windows workflow finishes and publishes a tagged release, no GameBrowser installer is available. Build artifacts are not evidence of a tested installation.
+The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to `https://multilancerng.github.io/GameBrowser/` after Pages is enabled with **GitHub Actions** as its source. Windows beta 76 has full and slim installers plus SHA-256 checksums in Releases. Newer source changes are released only after their Windows workflow passes. Installed-app validation is tracked separately from compilation.
 
 ## Features
 
@@ -27,7 +27,13 @@ Engine names, internal executable names (`aliasmode-sidecar`, `aliasmode-mcp`), 
 
 Drag a profile’s handle to arrange profiles, or focus the handle and use Arrow Up / Arrow Down. Manual order is saved in the local database across application restarts, separately for Local mode and each signed-in Cloud account. It is a device preference, not a Cloud-synchronized workspace setting. Column sorting is still available; **Saved order** restores the manual layout.
 
-The last selected profile moves to the top and has a violet **Admin** highlight. Other selected profiles have teal **Follower** borders. These labels identify selection roles in the workspace; account authorization still uses Cloud owner/admin/member permissions. Clearing selection returns to the saved manual order.
+Selecting a profile moves it to the top of the view. Before starting a sync group, the most recently selected profile is the candidate **Admin** (violet), with other selected profiles as **Followers** (teal). Once following starts, those assignments and colors stay fixed. Clicking or deselecting a follower changes only the view selection. Use **Apply selection** to change the group, or **Stop following** to end it. Cloud authorization still uses separate owner/admin/member account permissions.
+
+Open the profiles, choose a Chromium Admin and up to 20 Chromium or Firefox followers, then select **Start following**. Trusted clicks, text input, checkbox/select changes, standard keys, scrolling, and website navigation are replayed independently. Each browser retains its own cookies, login/session storage, and fingerprint. File uploads and operating-system dialogs are not replayed. Firefox can follow; trusted Admin capture currently requires Chromium.
+
+Use **Save session** (or the save-on-start option) to retain the Admin/follower choices in the local database. **Resume saved session** restores that group after an app restart; it does not launch browsers automatically. If a browser closes while a group is enabled, the group waits with its assignments intact and reconnects after the same profiles reopen. Reconnection sends future actions only, never replays old clicks or submissions. Pages that no longer match pause replay for attention. Stop ends the current group while retaining a saved plan; **Forget saved session** removes the plan without restarting an active group. Account changes or revoked access require fresh authorization.
+
+Saved sync groups contain only profile IDs and are isolated between Local mode and authorized Cloud accounts. Browser login/tab restoration continues to use each profile’s existing storage and close/open lifecycle.
 
 ## Windows development
 
@@ -44,7 +50,7 @@ The dashboard and Local API bind to loopback. Choose Local on first use to run w
 
 ## Build Windows installers
 
-Run **Actions → GameBrowser Windows → Run workflow**. It downloads the pinned upstream Firefox archive, verifies its published SHA-256, prepares the Bun sidecar, and builds full and slim NSIS installers with a checksum file. The full installer bundles WebView2; the slim installer downloads it when required. The upstream engine archive must remain publicly available.
+Run **Actions → GameBrowser Windows → Run workflow**. It downloads the pinned upstream Firefox archive, verifies its published SHA-256, prepares the sidecar with verified baseline Bun, and builds full and slim NSIS installers with a checksum file. The next release workflow also gates publication on a fresh Windows install/start/Local-mode/MCP/shutdown/uninstall smoke check. The full installer bundles WebView2; the slim installer downloads it when required. The upstream engine archive must remain publicly available.
 
 The artifact is `gamebrowser-windows-x64`. For a prerelease, push a `v` tag matching the version in `src-tauri/tauri.conf.json` after checking the build. Tag builds publish installers and `SHA256SUMS.txt` to this repository's Releases. Installers are currently unsigned; Windows may show an unknown publisher prompt. Test installation, profile launch, update and uninstall on Windows before a public stable release.
 

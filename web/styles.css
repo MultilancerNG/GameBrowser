@@ -1768,3 +1768,10 @@ html[data-theme="dark"] .profile-follower .profile-role { color: #5eead4; }
 .profile-table tbody tr.profile-follower td.col-action { background: #e8faf8; }
 html[data-theme="dark"] .profile-table tbody tr.profile-admin td.col-action { background: #2d2144; }
 html[data-theme="dark"] .profile-table tbody tr.profile-follower td.col-action { background: #123532; }
+.workspace-following { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 16px; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); background: var(--surface); }
+.workspace-following strong { font-size: 13px; }
+.workspace-following p { margin: 5px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.workspace-following .btn { flex-shrink: 0; }
+@media (max-width: 700px) { .workspace-following { align-items: flex-start; flex-direction: column; gap: 10px; } }
+.following-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; max-width: 490px; }
+.following-save { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }

@@ -32,6 +32,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.89'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
       - run: bun install --frozen-lockfile
       - name: Download and verify pinned upstream Firefox runtime
         shell: pwsh
@@ -86,6 +89,22 @@ jobs:
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)" | Add-Content artifacts/windows/SHA256SUMS.txt
           }
+      - name: Smoke test installed Windows application
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          ./scripts/gamebrowser-windows-smoke.ps1 `
+            -InstallerPath "artifacts/windows/GameBrowser_${version}_x64-offline-setup.exe" `
+            -ChecksumsPath artifacts/windows/SHA256SUMS.txt `
+            -ExpectedVersion $version `
+            -ReportPath artifacts/windows-smoke.json
+      - name: Upload Windows smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gamebrowser-windows-smoke
+          path: artifacts/windows-smoke.json
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: gamebrowser-windows-x64

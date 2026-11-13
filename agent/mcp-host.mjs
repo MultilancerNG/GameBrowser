@@ -475,13 +475,13 @@ export function sanitizeEnvironment(env = process.env) {
 
 async function main() {
   sanitizeEnvironment();
-  const desktopExecutable = join(
+  const desktopExecutable = process.env.ALIASMODE_DESKTOP_EXE || join(
     dirname(fileURLToPath(import.meta.url)),
     "..",
     "..",
     // macOS: Contents/Resources -> Contents/MacOS; Linux: lib/<app> -> bin.
     ...(process.platform === "darwin" ? ["..", "MacOS", "aliasmode"]
-      : process.platform === "linux" ? ["..", "..", "bin", "aliasmode"] : ["AliasMode.exe"]),
+      : process.platform === "linux" ? ["..", "..", "bin", "aliasmode"] : ["gamebrowser.exe"]),
   );
   const host = await createAliasModeMcp({ runtime: { desktopExecutable } });
   let shuttingDown = false;

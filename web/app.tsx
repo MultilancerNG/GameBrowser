@@ -1,3 +1,4 @@
+import { EMPTY_BROWSER_SYNC, followingSelection, sameFollowingSelection } from "./browser-following.ts";
 import { moveProfile, orderedProfileIds, selectionRanks } from "./profile-order.ts";
 import { VIEWPORT_PRESETS } from "./viewport-presets.ts";
 import { Channel } from "@tauri-apps/api/core";
@@ -25,6 +26,12 @@ import {
 } from "./desktop-update-result.ts";
 import {
   type UiProfile,
+  type BrowserSyncState,
+  fetchBrowserSync,
+  startBrowserSync,
+  resumeBrowserSync,
+  saveBrowserSyncSession,
+  stopBrowserSync,
   type HealthSource,
   type DiagnoseReport,
   type EditProfile,
@@ -1292,6 +1299,9 @@ function App() {
   const [invitationCode, setInvitationCode] = useState("");
   const [team, setTeam] = useState<CloudTeamState | null>(null);
   const [teamEmail, setTeamEmail] = useState("");
+  const inviteEmailRef = useRef<HTMLInputElement>(null);
+  const [inviteAccessTarget, setInviteAccessTarget] = useState<typeof accessTarget>(null);
+  useEffect(() => { setInviteAccessTarget(null); setAccessTarget(null); }, [cloudAuth?.user?.id, cloudAuth?.workspace?.id]);
   const [teamRole, setTeamRole] = useState<"admin" | "member">("member");
   const [teamBusy, setTeamBusy] = useState(false);
   const [teamErr, setTeamErr] = useState<string | null>(null);
@@ -1334,6 +1344,11 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null); // transient success banner
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [browserSync, setBrowserSync] = useState<BrowserSyncState>(EMPTY_BROWSER_SYNC);
+  const [saveFollowingSession, setSaveFollowingSession] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const syncBusyRef = useRef(false);
+  const syncRevision = useRef(0);
   const [deleting, setDeleting] = useState(false);
   const [profileOrder, setProfileOrder] = useState<string[]>([]);
   const [orderReady, setOrderReady] = useState(false);
@@ -1911,6 +1926,8 @@ function App() {
       setHealthSources([]);
       setSelected(new Set());
       setTeam(null);
+      setInviteAccessTarget(null);
+      setAccessTarget(null);
       setCloudEvents([]);
       setAuthPassword("");
       setAuthNotice(null);
@@ -2016,6 +2033,8 @@ function App() {
       setHealthSources([]);
       setSelected(new Set());
       setTeam(null);
+      setInviteAccessTarget(null);
+      setAccessTarget(null);
       setCloudEvents([]);
       setAuthPassword("");
       setAuthNotice(null);
@@ -2334,6 +2353,64 @@ function App() {
     const available = new Set(profiles.map((profile) => profile.id));
     return [...selected].reverse().find((id) => available.has(id));
   }, [profiles, selected]);
+
+  const syncSelection = useMemo(() => followingSelection(profiles, selected, isCloudMode), [profiles, selected, isCloudMode]);
+  const rosterLoadedRef = useRef(loaded);
+  rosterLoadedRef.current = loaded;
+  const hasSyncGroup = browserSync.adminId !== null;
+  const syncFollowerIds = useMemo(() => new Set(browserSync.followerIds), [browserSync.followerIds]);
+
+  useEffect(() => {
+    let active = true;
+    let polling = false;
+    let initial = true;
+    const initialRevision = syncRevision.current;
+    syncBusyRef.current = false;
+    setSyncBusy(false);
+    setBrowserSync(EMPTY_BROWSER_SYNC);
+    if (!workspaceReady || appMode?.legacyRemote || restartRequired) return;
+    const poll = async () => {
+      if (polling || syncBusyRef.current) return;
+      polling = true;
+      const revision = syncRevision.current;
+      try {
+        const state = await fetchBrowserSync();
+        if (!active || syncBusyRef.current || revision !== syncRevision.current) return;
+        setBrowserSync((current) => JSON.stringify(current) === JSON.stringify(state) ? current : state);
+        if (revision !== initialRevision) initial = false;
+        if (initial && state.adminId && rosterLoadedRef.current) setSelected(new Set([...state.followerIds, state.adminId]));
+        if (!state.starting && (rosterLoadedRef.current || !state.adminId)) initial = false;
+      } catch (error) {
+        if (active && !syncBusyRef.current && revision === syncRevision.current) setBrowserSync((current) => ({ ...current, error: String(error) }));
+      } finally { polling = false; }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      ++syncRevision.current;
+    };
+  }, [workspaceReady, isCloudMode, appMode?.legacyRemote, restartRequired, cloudAuth?.user?.id, cloudAuth?.workspace?.id]);
+
+  const followingCommand = async (run: () => Promise<BrowserSyncState>, restoreSelection = false) => {
+    const revision = ++syncRevision.current;
+    const generation = authGeneration.current;
+    syncBusyRef.current = true;
+    setSyncBusy(true);
+    try {
+      const state = await run();
+      if (revision !== syncRevision.current || generation !== authGeneration.current) return;
+      setBrowserSync(state);
+      if (restoreSelection && state.adminId) setSelected(new Set([...state.followerIds, state.adminId]));
+    } catch (error) {
+      if (revision === syncRevision.current && generation === authGeneration.current) {
+        setBrowserSync((current) => ({ ...current, error: String(error) }));
+      }
+    } finally {
+      if (revision === syncRevision.current && generation === authGeneration.current) { syncBusyRef.current = false; setSyncBusy(false); }
+    }
+  };
 
   const sortField = (p: UiProfile, key: SortKey): string | number => {
     switch (key) {
@@ -3973,6 +4050,32 @@ function App() {
           </div>
         )}
 
+        {!appMode?.legacyRemote && (selected.size >= 2 || hasSyncGroup || browserSync.saved || syncBusy) && <section className="workspace-following" aria-label="Browser following">
+          <div>
+            <strong>{syncBusy || browserSync.starting ? "Connecting followers…" : browserSync.waiting ? "Session waiting for browsers to reopen" : browserSync.active ? "Followers are following Admin" : hasSyncGroup ? "Session needs attention" : browserSync.saved ? "Saved sync session" : "Browser following"}</strong>
+            {hasSyncGroup && <p>Admin: {profiles.find((profile) => profile.id === browserSync.adminId)?.name ?? browserSync.adminId} · {browserSync.followerIds.length} follower(s). Clicking a follower does not change this session.</p>}
+            <p>{hasSyncGroup ? "Use Apply selection to change assignments, or Stop following to end this group." : syncSelection.issue ?? "Mirror clicks, typing, navigation and scrolling. Each profile keeps its own cookies and identity."}</p>
+            {hasSyncGroup && syncSelection.issue && <p>Selection: {syncSelection.issue}</p>}
+            {browserSync.waiting && <p>Assignments are retained. No actions are sent while required browsers are closed.</p>}
+            {browserSync.failedFollowerIds.length > 0 && <p role="alert">{browserSync.failedFollowerIds.length} follower(s) missed an action. Retry only when ready; past actions are not replayed.</p>}
+            {browserSync.error && <p className="modal-err" role="alert">{browserSync.error}</p>}
+          </div>
+          <div className="following-controls">
+            {!hasSyncGroup && <>
+              <label className="following-save"><input type="checkbox" checked={saveFollowingSession} onChange={(event) => setSaveFollowingSession(event.target.checked)} />Save session for later</label>
+              <button type="button" className="btn primary" disabled={syncBusy || !!syncSelection.issue} onClick={() => { if (syncSelection.adminId) void followingCommand(() => startBrowserSync(syncSelection.adminId!, syncSelection.followerIds, saveFollowingSession)); }}>Start following</button>
+              {syncBusy && <button type="button" className="btn solid-danger" onClick={() => void followingCommand(stopBrowserSync)}>Stop following</button>}
+              {browserSync.saved && <button type="button" className="btn" disabled={syncBusy} onClick={() => void followingCommand(resumeBrowserSync, true)}>Resume saved session</button>}
+            </>}
+            {hasSyncGroup && <>
+              <button type="button" className="btn" disabled={syncBusy || !!syncSelection.issue || (sameFollowingSelection({ ...browserSync, active: true }, syncSelection.adminId, syncSelection.followerIds))} onClick={() => { if (syncSelection.adminId) void followingCommand(() => startBrowserSync(syncSelection.adminId!, syncSelection.followerIds, browserSync.saved)); }}>Apply selection</button>
+              {!browserSync.active && !browserSync.starting && !browserSync.waiting && <button type="button" className="btn primary" disabled={syncBusy} onClick={() => void followingCommand(() => startBrowserSync(browserSync.adminId!, browserSync.followerIds, browserSync.saved))}>Retry following</button>}
+              <button type="button" className="btn solid-danger" onClick={() => void followingCommand(stopBrowserSync)}>Stop following</button>
+            </>}
+            {(hasSyncGroup || browserSync.saved) && <button type="button" className="btn ghost" disabled={syncBusy} onClick={() => void followingCommand(() => saveBrowserSyncSession(!browserSync.saved))}>{browserSync.saved ? "Forget saved session" : "Save session"}</button>}
+          </div>
+        </section>}
+
         {/* Bulk actions only exist once there is a selection to act on — an
             always-present strip of disabled buttons read as clutter. */}
         {selected.size > 0 && (
@@ -4099,8 +4202,11 @@ function App() {
                 // live through the local cache. Only rows locked by ANOTHER
                 // session stay read-only — that writer owns the profile.
                 const canEditRow = !isCloudMode || (p.permission === "edit" && !p.lockedBy);
+                const followingRole = hasSyncGroup
+                  ? p.id === browserSync.adminId ? "admin" : syncFollowerIds.has(p.id) ? "follower" : null
+                  : selected.has(p.id) ? p.id === activeProfileId ? "admin" : "follower" : null;
                 return (
-                <tr key={p.id} data-profile-id={p.id} className={`${p.running ? "running" : ""}${selected.has(p.id) ? ` selected ${p.id === activeProfileId ? "profile-admin" : "profile-follower"}` : ""}`}
+                <tr key={p.id} data-profile-id={p.id} className={`${p.running ? "running" : ""}${selected.has(p.id) || followingRole ? " selected" : ""}${followingRole ? ` profile-${followingRole}` : ""}`}
                   onDragOver={(event) => { if (draggedProfile.current && draggedProfile.current !== p.id) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; event.currentTarget.classList.add("profile-drop-target"); } }}
                   onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.classList.remove("profile-drop-target"); }}
                   onDrop={(event) => { event.preventDefault(); event.currentTarget.classList.remove("profile-drop-target"); const source = draggedProfile.current; draggedProfile.current = null; if (source) void arrangeProfile(source, p.id, event.clientY > event.currentTarget.getBoundingClientRect().top + event.currentTarget.offsetHeight / 2); }}>
@@ -4119,7 +4225,7 @@ function App() {
                   {columnVisible("name") && (
                     <td className="col-name" title={`${p.name}\n${p.id}`}>
                       <span className="name-cell">
-                        <span className="n">{p.name}<FingerprintBadge p={p} />{selected.has(p.id) && <span className="profile-role">{p.id === activeProfileId ? "Admin" : "Follower"}</span>}</span>
+                        <span className="n">{p.name}<FingerprintBadge p={p} />{followingRole && <span className="profile-role">{followingRole === "admin" ? "Admin" : "Follower"}</span>}</span>
                         <span className="sub">
                           {p.id}
                           <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>
@@ -4659,8 +4765,9 @@ function App() {
                 {(cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin") && (
                   <>
                     <h3 className="settings-subhead">{t("Invitations")}</h3>
+                    {inviteAccessTarget && <p className="hint">Invite a verified member, then <button type="button" className="btn xs" disabled={teamBusy} onClick={() => openAccess(inviteAccessTarget)}>manage {inviteAccessTarget.kind === "folder" ? "group" : "profile"} access · {inviteAccessTarget.name}</button>.</p>}
                     <form className="team-code" onSubmit={(event) => { event.preventDefault(); void inviteTeamMember(); }}>
-                      <input className="input" type="email" aria-label={t("Invite email")} aria-describedby="invite-team-help" placeholder={t("Staff email address")} value={teamEmail} disabled={teamBusy} onChange={(event) => setTeamEmail(event.target.value)} />
+                      <input ref={inviteEmailRef} className="input" type="email" aria-label={t("Invite email")} aria-describedby="invite-team-help" placeholder={t("Staff email address")} value={teamEmail} disabled={teamBusy} onChange={(event) => setTeamEmail(event.target.value)} />
                       {cloudAuth?.workspace?.role === "owner" && <select className="select" aria-label={t("Invitation role")} value={teamRole} disabled={teamBusy} onChange={(event) => setTeamRole(event.target.value as "admin" | "member")}><option value="member">{t("Member")}</option><option value="admin">{t("Admin")}</option></select>}
                       <button className="btn primary" type="submit" disabled={teamBusy || !teamEmail.trim()}>{t("Send invite")}</button>
                     </form>
@@ -4929,7 +5036,16 @@ function App() {
             {team && !team.members.some((member) => member.role === "member") && <p>{t("Invite members in Settings → Team to share access.")}</p>}
             {teamErr && <div className="modal-err" role="alert">{teamErr}</div>}
           </div>
-          <div className="modal-foot"><button className="btn" disabled={teamBusy} onClick={() => setAccessTarget(null)}>{t("Close")}</button></div>
+          <div className="modal-foot">
+            <button type="button" className="btn primary" disabled={teamBusy} onClick={() => {
+              setInviteAccessTarget(accessTarget);
+              setAccessTarget(null);
+              setSettingsTab("team");
+              setView("settings");
+              requestAnimationFrame(() => inviteEmailRef.current?.focus());
+            }}>Invite members</button>
+            <button className="btn" disabled={teamBusy} onClick={() => setAccessTarget(null)}>{t("Close")}</button>
+          </div>
         </div>
       </div>}
 

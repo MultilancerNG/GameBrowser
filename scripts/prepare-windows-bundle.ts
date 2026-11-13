@@ -216,6 +216,7 @@ export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
     "script-runner.mjs",
     "script-runner.py",
     "runtime-client.mjs",
+    "browser-sync-worker.mjs",
   ]) {
     cpSync(join(cwd, "agent", file), join(agentRoot, file));
   }

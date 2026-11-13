@@ -78,6 +78,7 @@ export class ProfileStore {
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS profiles_fingerprint_seed ON profiles(fingerprint_seed)");
     this.db.exec("CREATE TABLE IF NOT EXISTS profile_orders (scope TEXT PRIMARY KEY, ids_json TEXT NOT NULL)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS browser_sync_plans (scope TEXT PRIMARY KEY, admin_id TEXT NOT NULL, follower_ids_json TEXT NOT NULL)");
     // Cookies added while the profile was closed. The next launch sets them, then clears them.
     try {
       this.db.exec(`ALTER TABLE profiles ADD COLUMN pending_cookies_json TEXT NOT NULL DEFAULT '[]'`);
@@ -515,6 +516,28 @@ export class ProfileStore {
   setProfileOrder(scope: string, ids: string[]): void {
     this.db.query("INSERT INTO profile_orders (scope, ids_json) VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET ids_json=excluded.ids_json")
       .run(scope, JSON.stringify(ids));
+  }
+
+  /** Saved mirroring plans contain profile IDs only, never browser endpoints or session data. */
+  getBrowserSyncPlan(scope: string): { adminId: string; followerIds: string[] } | null {
+    const row = this.db.query<{ admin_id: string; follower_ids_json: string }, [string]>("SELECT admin_id, follower_ids_json FROM browser_sync_plans WHERE scope = ?").get(scope);
+    if (!row) return null;
+    try {
+      const followers = JSON.parse(row.follower_ids_json);
+      if (!Array.isArray(followers) || followers.length < 1 || followers.length > 20 || new Set(followers).size !== followers.length || followers.includes(row.admin_id)) return null;
+      assertSafeProfileId(row.admin_id);
+      followers.forEach(assertSafeProfileId);
+      return { adminId: row.admin_id, followerIds: followers };
+    } catch { return null; }
+  }
+
+  setBrowserSyncPlan(scope: string, plan: { adminId: string; followerIds: string[] } | null): void {
+    if (!plan) { this.db.query("DELETE FROM browser_sync_plans WHERE scope = ?").run(scope); return; }
+    assertSafeProfileId(plan.adminId);
+    if (plan.followerIds.length < 1 || plan.followerIds.length > 20 || new Set(plan.followerIds).size !== plan.followerIds.length || plan.followerIds.includes(plan.adminId)) throw new Error("invalid browser mirroring plan");
+    plan.followerIds.forEach(assertSafeProfileId);
+    this.db.query("INSERT INTO browser_sync_plans (scope, admin_id, follower_ids_json) VALUES (?, ?, ?) ON CONFLICT(scope) DO UPDATE SET admin_id=excluded.admin_id, follower_ids_json=excluded.follower_ids_json")
+      .run(scope, plan.adminId, JSON.stringify(plan.followerIds));
   }
 
   listProfiles(): Profile[] {

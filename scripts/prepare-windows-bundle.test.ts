@@ -86,6 +86,7 @@ function workspace(): string {
     "script-runner.mjs",
     "script-runner.py",
     "runtime-client.mjs",
+    "browser-sync-worker.mjs",
   ]) {
     writeFileSync(join(cwd, "agent", file), file);
   }
@@ -144,6 +145,7 @@ test("Windows bundle preparation packages owned Firefox with verified hashes and
     expect(existsSync(join(cwd, "src-tauri", "resources", "playwright", "python"))).toBe(false);
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "agent", "script-runner.mjs"), "utf8")).toBe("script-runner.mjs");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "agent", "script-runner.py"), "utf8")).toBe("script-runner.py");
+    expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "agent", "browser-sync-worker.mjs"), "utf8")).toBe("browser-sync-worker.mjs");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "worker.mjs"), "utf8")).toBe("worker");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "playwright-worker.mjs"), "utf8")).toBe("worker");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "firefox-worker.mjs"), "utf8")).toBe("firefox worker");

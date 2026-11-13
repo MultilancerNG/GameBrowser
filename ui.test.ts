@@ -5216,3 +5216,101 @@ test("Cloud profile order is isolated by the signed-in account and from Local mo
     expect((await handleUiRequest(new Request("http://x/ui/api/profile-order"), {} as any, s, null, options))!.status).toBe(401);
   } finally { s.close(); }
 });
+
+test("browser mirroring routes use profile IDs, redact endpoints, and reject untrusted mutations", async () => {
+  const s = store();
+  const calls: unknown[] = [];
+  const idle = { active: false, starting: false, waiting: false, saved: false, adminId: null, followerIds: [], savedAdminId: null, savedFollowerIds: [], failedFollowerIds: [], error: null };
+  const runtime = {
+    status: () => idle,
+    async resume() { calls.push("resume"); return idle; },
+    async save(saveSession: boolean) { calls.push({ saveSession }); return idle; },
+    async start(adminId: unknown, followerIds: unknown) { calls.push({ adminId, followerIds }); return { ...idle, active: true, adminId: String(adminId), followerIds: followerIds as string[] }; },
+    async stop() { calls.push("stop"); return idle; },
+  };
+  const options = { browserSync: runtime };
+  const post = (body: unknown, headers: Record<string, string> = { "content-type": "application/json" }) => new Request("http://x/ui/api/browser-sync", { method: "POST", headers, body: JSON.stringify(body) });
+  try {
+    const start = await handleUiRequest(post({ adminId: "admin", followerIds: ["follower"] }), {} as any, s, null, options);
+    expect(start!.status).toBe(200);
+    expect(await start!.json()).toEqual({ ok: true, ...idle, active: true, adminId: "admin", followerIds: ["follower"] });
+    expect((await handleUiRequest(post({ adminId: "admin", followerIds: ["follower"], endpoint: "ws://outside.test" }), {} as any, s, null, options))!.status).toBe(400);
+    expect((await handleUiRequest(post({ adminId: "admin", followerIds: ["follower"] }, { "content-type": "application/json", origin: "https://outside.test" }), {} as any, s, null, options))!.status).toBe(403);
+    expect((await handleUiRequest(post({ adminId: "admin", followerIds: ["follower"] }, { "content-type": "text/plain" }), {} as any, s, null, options))!.status).toBe(415);
+    expect((await handleUiRequest(post({ adminId: "admin", followerIds: ["admin"] }), {} as any, s, null, options))!.status).toBe(400);
+    const stop = await handleUiRequest(new Request("http://x/ui/api/browser-sync", { method: "DELETE", headers: { "content-type": "application/json" } }), {} as any, s, null, options);
+    expect(stop!.status).toBe(200);
+    expect(calls).toEqual([{ adminId: "admin", followerIds: ["follower"] }, "stop"]);
+    expect((await handleUiRequest(post({ action: "save", saveSession: true }), {} as any, s, null, options))!.status).toBe(200);
+    expect((await handleUiRequest(post({ action: "resume" }), {} as any, s, null, options))!.status).toBe(200);
+    expect(calls.slice(-2)).toEqual([{ saveSession: true }, "resume"]);
+    expect((await handleUiRequest(post({ action: "resume", endpoint: "ws://outside.test" }), {} as any, s, null, options))!.status).toBe(400);
+    expect((await handleUiRequest(post({ action: "save", saveSession: "yes" }), {} as any, s, null, options))!.status).toBe(400);
+    expect((await handleUiRequest(post({ adminId: "admin", followerIds: ["follower"] }), {} as any, s, {} as any, options))!.status).toBe(400);
+  } finally { s.close(); }
+});
+
+test("browser mirroring retains its configured group while profiles are closed", async () => {
+  const s = store();
+  const launcher = { certifiedActive: async () => false } as unknown as Launcher;
+  try {
+    s.upsertProfile({ ...s.getProfile("k1d0cd11")!, id: "follower01" });
+    const response = await handleUiRequest(new Request("http://x/ui/api/browser-sync", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ adminId: "k1d0cd11", followerIds: ["follower01"], saveSession: true }),
+    }), launcher, s);
+    expect(response!.status).toBe(200);
+    expect(await response!.json()).toMatchObject({ waiting: true, active: false, saved: true, adminId: "k1d0cd11", followerIds: ["follower01"] });
+    expect(s.getBrowserSyncPlan("local")).toEqual({ adminId: "k1d0cd11", followerIds: ["follower01"] });
+    const stop = await handleUiRequest(new Request("http://x/ui/api/browser-sync", { method: "DELETE", headers: { "content-type": "application/json" } }), launcher, s);
+    expect(await stop!.json()).toMatchObject({ adminId: null, active: false, waiting: false, saved: true, savedAdminId: "k1d0cd11" });
+    const resume = await handleUiRequest(new Request("http://x/ui/api/browser-sync", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "resume" }),
+    }), launcher, s);
+    expect(await resume!.json()).toMatchObject({ waiting: true, adminId: "k1d0cd11" });
+    const clear = await handleUiRequest(new Request("http://x/ui/api/browser-sync", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "save", saveSession: false }),
+    }), launcher, s);
+    expect(await clear!.json()).toMatchObject({ waiting: true, adminId: "k1d0cd11", saved: false });
+    expect(s.getBrowserSyncPlan("local")).toBeNull();
+    await handleUiRequest(new Request("http://x/ui/api/browser-sync", { method: "DELETE", headers: { "content-type": "application/json" } }), launcher, s);
+  } finally { s.close(); }
+});
+
+test("Cloud browser mirroring requires authenticated edit permission for every profile", async () => {
+  const s = store();
+  const launcher = {} as Launcher;
+  const options = {
+    cloudAuth: { state: () => ({ authenticated: true }) } as unknown as CloudAuthRuntime,
+    cloudConnection: { accountId: () => "account-one" } as unknown as CloudConnectionRuntime,
+    cloudBrowser: { listRoster: async () => ({ profiles: [{ id: "k1d0cd11", running: true, permission: "edit", lockedBy: null }, { id: "follower01", running: true, permission: "view", lockedBy: null }] }) } as unknown as import("./cloud-browser.ts").CloudBrowserLifecycle,
+  };
+  try {
+    const response = await handleUiRequest(new Request("http://x/ui/api/browser-sync", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ adminId: "k1d0cd11", followerIds: ["follower01"] }),
+    }), launcher, s, null, options);
+    expect(response!.status).toBe(403);
+    expect((await response!.json()).error).toContain("edit access");
+  } finally { s.close(); }
+});
+
+test("account exit stops mirroring before closing profiles or releasing authentication", async () => {
+  const s = store();
+  const events: string[] = [];
+  const idle = { active: false, starting: false, waiting: false, saved: false, adminId: null, followerIds: [], savedAdminId: null, savedFollowerIds: [], failedFollowerIds: [], error: null };
+  const options = {
+    browserSync: { status: () => idle, start: async () => idle, resume: async () => idle, save: async () => idle, stop: async () => { events.push("sync-stop"); return idle; } },
+    cloudAuth: {
+      beginExit: () => () => events.push("exit-finished"),
+      signOut: async () => { events.push("sign-out"); },
+    } as unknown as CloudAuthRuntime,
+    cloudBrowser: { releaseAll: async () => { events.push("close-profiles"); return true; } } as unknown as import("./cloud-browser.ts").CloudBrowserLifecycle,
+    cloudConnection: { clearDevice: () => { events.push("clear-device"); } } as unknown as CloudConnectionRuntime,
+  };
+  try {
+    const response = await handleUiRequest(new Request("http://x/ui/api/cloud-auth/signout", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    }), {} as any, s, null, options);
+    expect(response!.status).toBe(200);
+    expect(events).toEqual(["sync-stop", "close-profiles", "clear-device", "sign-out", "exit-finished"]);
+  } finally { s.close(); }
+});
