@@ -21,6 +21,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:GH_REPO -cne 'MultilancerNG/GameBrowser') { throw 'Unexpected cleanup repository' }
           # Fixed task-created runs only. No inputs, tag runs, new candidates or foreign work.
+          # Completed records are skipped; reruns retain the same immutable target identities.
           $targets = @(
             @{ run = '43522418810'; job = '132219739797'; sha = '6dba2672c9417cd2c6f8561bc4f128028ec77594' },
             @{ run = '43522979813'; job = '132221594063'; sha = '87a0e0ff5ac8cae86153a98f514c958b45c7d5f4' },

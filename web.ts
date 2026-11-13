@@ -288,6 +288,20 @@ export function serveDashboard(opts: DashboardServerOptions) {
         log,
       })
     : undefined;
+  let stopping = false;
+  let shutdownInFlight: Promise<void> | undefined;
+  const agentSockets = new Set<ServerWebSocket<AgentSocketData>>();
+  // Register at upgrade time too: shutdown can begin before Bun's open callback.
+  const agentSessions = new Set<AgentControlSession>();
+  const disconnectAgent = (session: AgentControlSession): Promise<void> => {
+    const cleanup = session.disconnect();
+    void cleanup.finally(() => { agentSessions.delete(session); }).catch(() => {});
+    return cleanup;
+  };
+  const closeAgentSocket = (socket: ServerWebSocket<AgentSocketData>): void => {
+    try { socket.close(1001, "GameBrowser is shutting down"); }
+    catch { /* Its session still drains before the store is closed. */ }
+  };
   const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, runtimeMode === "cloud", opts.cloudConnection, opts.defaultCloudUrl) : undefined;
   // The desktop app downloads Python for Python scripts; a source checkout uses python3.
   const python = library && resolvePlaywrightRuntime().kind === "packaged"
@@ -318,25 +332,37 @@ export function serveDashboard(opts: DashboardServerOptions) {
     websocket: {
       maxPayloadLength: AGENT_CONTROL_MAX_MESSAGE_BYTES,
       open(socket) {
-        if ("workspace" in socket.data) socket.data.workspace.socketHandlers.open(workspaceSocket(socket as ServerWebSocket<WorkspaceSocketData>));
+        if ("workspace" in socket.data) {
+          if (stopping) { socket.close(1001, "GameBrowser is shutting down"); return; }
+          socket.data.workspace.socketHandlers.open(workspaceSocket(socket as ServerWebSocket<WorkspaceSocketData>));
+          return;
+        }
+        agentSockets.add(socket);
+        if (stopping) { void disconnectAgent(socket.data.session).catch(() => {}); closeAgentSocket(socket); }
       },
       message(socket, message) {
+        if (stopping) {
+          if (!("workspace" in socket.data)) void disconnectAgent(socket.data.session).catch(() => {});
+          closeAgentSocket(socket); return;
+        }
         if ("workspace" in socket.data) {
           socket.data.workspace.socketHandlers.message(workspaceSocket(socket as ServerWebSocket<WorkspaceSocketData>), typeof message === "string" ? message : Buffer.from(message)); return;
         }
         const raw = typeof message === "string" ? message : new Uint8Array(message);
         void socket.data.session.enqueue(raw).then((response) => {
-          socket.send(JSON.stringify(response));
-        });
+          if (!stopping) socket.send(JSON.stringify(response));
+        }).catch(() => { /* A closing session rejects queued messages before dispatch. */ });
       },
       close(socket) {
         if ("workspace" in socket.data) { socket.data.workspace.socketHandlers.close(workspaceSocket(socket as ServerWebSocket<WorkspaceSocketData>)); return; }
-        void socket.data.session.disconnect();
+        agentSockets.delete(socket);
+        void disconnectAgent(socket.data.session).catch(() => {});
       },
     },
     fetch: async (req, server) => {
+      if (stopping) return Response.json({ ok: false, error: "GameBrowser is shutting down" }, { status: 503, headers: { "cache-control": "no-store" } });
       const reqUrl = new URL(req.url);
-      if (reqUrl.pathname === "/workspace/relay") return liveWorkspace.upgrade(req, server.requestIP(req)?.address ?? "", data => server.upgrade(req, { data }));
+      if (reqUrl.pathname === "/workspace/relay") return liveWorkspace.upgrade(req, server.requestIP(req)?.address ?? "", data => !stopping && server.upgrade(req, { data }));
       if (reqUrl.pathname === "/workspace" || reqUrl.pathname.startsWith("/workspace/")) return liveWorkspace.handle(req, server.requestIP(req)?.address ?? "");
       if ((reqUrl.pathname === "/ui/api/scripts" || reqUrl.pathname.startsWith("/ui/api/scripts/"))
         && !isLoopbackAddress(server.requestIP(req)?.address)) {
@@ -356,11 +382,12 @@ export function serveDashboard(opts: DashboardServerOptions) {
           return Response.json({ ok: false, error: "agent authorization failed" }, { status: 401 });
         }
         const session = agentHub.connect();
+        agentSessions.add(session);
         const upgraded = server.upgrade(req, {
           data: { session },
         });
         if (!upgraded) {
-          void session.disconnect();
+          void disconnectAgent(session).catch(() => {});
           return Response.json({ ok: false, error: "WebSocket upgrade failed" }, { status: 400 });
         }
         return undefined;
@@ -401,5 +428,20 @@ export function serveDashboard(opts: DashboardServerOptions) {
   });
   void agentHub?.cleanupTemporaryProfiles();
   log(`dashboard + API on http://${hostname}:${server.port}  (UI at /, AliasMode Local API under /api; AdsPower-compatible)`);
-  return Object.assign(server, { stopScripts: async () => { await liveWorkspace.stop(); await scripts?.runner.shutdown(); } });
+  return Object.assign(server, { stopScripts: (): Promise<void> => {
+    if (shutdownInFlight) return shutdownInFlight;
+    stopping = true;
+    const agents = [...agentSessions].map(disconnectAgent);
+    for (const socket of agentSockets) closeAgentSocket(socket);
+    // Attempt every owned service even when one fails. Browser session capture
+    // and authoritative native teardown remain the desktop runtime's responsibility.
+    shutdownInFlight = Promise.allSettled([
+      ...agents, liveWorkspace.stop(), scripts?.runner.shutdown() ?? Promise.resolve(),
+    ]).then(results => {
+      const failure = results.find(result => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason instanceof Error
+        ? failure.reason : new Error("GameBrowser background cleanup could not be confirmed");
+    });
+    return shutdownInFlight;
+  } });
 }

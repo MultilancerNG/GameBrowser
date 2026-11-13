@@ -71,8 +71,8 @@ pub(crate) fn exit_after_cleanup_failure(
     exit_after_cleanup_failure_message(
         app,
         sidecar,
-        "AliasMode shutdown failed",
-        format!("AliasMode could not confirm safe browser cleanup. {error}"),
+        "GameBrowser shutdown failed",
+        format!("GameBrowser could not confirm safe browser cleanup. {error}"),
     );
 }
 
@@ -84,9 +84,9 @@ pub(crate) fn exit_after_update_cleanup_failure(
     exit_after_cleanup_failure_message(
         app,
         sidecar,
-        "AliasMode update not installed",
+        "GameBrowser update not installed",
         format!(
-            "AliasMode could not confirm safe browser cleanup, so the update was not installed. The current version remains installed. {error}"
+            "GameBrowser could not confirm safe browser cleanup, so the update was not installed. The current version remains installed. {error}"
         ),
     );
 }
@@ -142,15 +142,15 @@ fn ask_to_close(
 ) {
     let message = match active {
         Ok(count) => format!(
-            "{count} browser session{} active. AliasMode will save session state and close the browser{} before exiting.",
+            "{count} browser session{} active. GameBrowser will save session state and close the browser{} before exiting.",
             if count == 1 { " is" } else { "s are" },
             if count == 1 { "" } else { "s" },
         ),
-        Err(_) => "Browser activity could not be confirmed. AliasMode will save session state and close any active browsers before exiting.".to_owned(),
+        Err(_) => "Browser activity could not be confirmed. GameBrowser will save session state and close any active browsers before exiting.".to_owned(),
     };
     app.dialog()
         .message(message)
-        .title("Close AliasMode?")
+        .title("Close GameBrowser?")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::YesNo)
         .show(move |confirmed| {

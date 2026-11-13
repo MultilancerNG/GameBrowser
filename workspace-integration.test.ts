@@ -71,6 +71,25 @@ test("mounted workspace uses the existing dynamic origin and protects the first-
   } finally { await f.cleanup(); }
 });
 
+test("shutdown during awaited preparation never constructs a late workspace or native manager", async () => {
+  const f = fixture();
+  let entered!: () => void, release!: () => void;
+  const refreshing = new Promise<void>(resolve => { entered = resolve; });
+  const pendingRefresh = new Promise<void>(resolve => { release = resolve; });
+  const originalRefresh = (f.runtime as any).refresh.bind(f.runtime);
+  // Hold the actual Local refresh boundary after its access check so shutdown
+  // can invalidate the generation deterministically, before construction.
+  (f.runtime as any).refresh = async () => { await originalRefresh(); entered(); await pendingRefresh; };
+  let response: Promise<Response> | undefined;
+  try {
+    response = f.runtime.handle(f.request("bootstrap"), "127.0.0.1");
+    await refreshing; await f.runtime.stop(); release();
+    expect((await response).status).toBe(401);
+    expect(f.workspace).toBeUndefined();
+    expect((f.runtime as any).workspace).toBeUndefined();
+  } finally { release(); await response; await f.cleanup(); }
+});
+
 test("Cloud roster displays uncached profiles, routes open/close through coordinator, and forbids local identity writes", async () => {
   const f = fixture("cloud");
   const privateProfile = buildNewProfile({ name: "Cached profile from another account" }, () => false);

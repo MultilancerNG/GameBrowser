@@ -191,6 +191,8 @@ try {
   await mirroredInput('GameBrowser mixed following');
   checks.actualChromiumAdminFirefoxFollower = true;
   await page.screenshot({ path: screenshot, fullPage: false });
+  // Retain the active improved UI before later shutdown checks replace the diagnostic image.
+  await page.screenshot({ path: screenshot.replace(/\.png$/i, '.active.png'), fullPage: false });
   await stopFollowingAndCheckProcesses(initialFollowerLaunch.pid);
   checks.stopFollowingKeepsBrowsersAlive = true;
 

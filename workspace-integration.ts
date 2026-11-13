@@ -121,9 +121,17 @@ export class DashboardWorkspace {
     const task = (async () => {
       const scope = this.currentScope();
       if (!scope) throw new Error("Choose Local or sign in to Cloud in Profiles before opening Live workspace");
-      if (this.workspace && this.scope === scope) { await this.refresh(); return this.workspace; }
-      await this.invalidate(); this.scope = scope; await this.refresh();
+      if (this.workspace && this.scope === scope) {
+        const workspace = this.workspace, epoch = this.epoch;
+        await this.refresh();
+        if (this.stopped || this.workspace !== workspace || epoch !== this.epoch || this.scope !== scope || scope !== this.currentScope()) throw new Error("Workspace account changed");
+        return workspace;
+      }
+      await this.invalidate();
+      if (this.stopped || scope !== this.currentScope()) throw new Error("Workspace account changed");
       const epoch = this.epoch;
+      this.scope = scope; await this.refresh();
+      if (this.stopped || epoch !== this.epoch || this.scope !== scope || scope !== this.currentScope()) throw new Error("Workspace account changed");
       const authorized = (id?: string) => epoch === this.epoch && this.scope === scope && this.authorized(id);
       const authorize = async () => { if (!authorized()) throw new Error("Workspace account changed"); await this.refresh(); if (!authorized()) throw new Error("Workspace account changed"); };
       const runtime = resolvePlaywrightRuntime();

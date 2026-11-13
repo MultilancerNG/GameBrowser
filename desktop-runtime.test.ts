@@ -194,6 +194,118 @@ test("desktop shutdown stops script workers before browser capture and store clo
   expect(events).toEqual(["server", "scripts", "browser", "store"]);
 });
 
+test("desktop shutdown closes a real owned WebSocket and drains HTTP plus admission before final listener cleanup", async () => {
+  let peer: import("bun").ServerWebSocket<unknown> | undefined;
+  let requestEntered!: () => void, releaseRequest!: () => void, scriptsStopped!: () => void;
+  const entered = new Promise<void>(resolve => { requestEntered = resolve; });
+  const responseReady = new Promise<void>(resolve => { releaseRequest = resolve; });
+  const scriptsDone = new Promise<void>(resolve => { scriptsStopped = resolve; });
+  const events: string[] = [], stops: Array<boolean | undefined> = [];
+  const activity = { inFlight: 0, queued: 0 };
+  const listener = Bun.serve<Record<string, never>>({ hostname: "127.0.0.1", port: 0, development: false,
+    async fetch(request, server) {
+      if (new URL(request.url).pathname === "/socket") {
+        if (server.upgrade(request, { data: {} })) return;
+        return new Response("upgrade failed", { status: 400 });
+      }
+      requestEntered(); await responseReady; events.push("http-finished"); return new Response("saved");
+    },
+    websocket: { open(socket) { peer = socket; }, message() {} },
+  });
+  const socket = new WebSocket(`ws://127.0.0.1:${listener.port}/socket`);
+  let shutdown: Promise<void> | undefined;
+  let response: Promise<Response> | undefined;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener("open", () => resolve(), { once: true });
+      socket.addEventListener("error", reject, { once: true });
+    });
+    const closed = new Promise<void>(resolve => socket.addEventListener("close", () => resolve(), { once: true }));
+    response = fetch(`http://127.0.0.1:${listener.port}/save`); await entered;
+    const runtime = new ManagedDesktopRuntime({
+      server: {
+        get pendingRequests() { return listener.pendingRequests; },
+        get pendingWebSockets() { return listener.pendingWebSockets; },
+        stop(force) { stops.push(force); events.push(force ? "listener-finished" : "listener-requested"); return listener.stop(force); },
+        async stopScripts() { peer!.close(1001, "Desktop stopping"); peer!.terminate(); await closed; events.push("scripts"); scriptsStopped(); },
+      },
+      admission: { stats: () => activity } as any,
+      store: { listLaunches: () => [{ profileId: "owned" }], close: () => { events.push("store"); } },
+      launcher: { stop: async () => { events.push("browser"); return true; } },
+      shutdownTimeoutMs: 2000,
+    });
+    shutdown = runtime.shutdown(); await scriptsDone;
+    // HTTP alone must keep the listener in graceful mode, even without admission work.
+    await Bun.sleep(30);
+    expect(stops).toEqual([false]); expect(events).not.toContain("browser"); expect(events).not.toContain("store");
+    activity.inFlight = 1;
+    releaseRequest(); expect(await (await response).text()).toBe("saved");
+    // The admitted lifecycle transition still owns its work after HTTP completes.
+    await Bun.sleep(30); expect(stops).toEqual([false]); expect(events).not.toContain("browser");
+    activity.inFlight = 0;
+    await shutdown;
+    expect(stops[0]).toBe(false);
+    expect(events.indexOf("scripts")).toBeGreaterThan(events.indexOf("listener-requested"));
+    expect(events.indexOf("browser")).toBeGreaterThan(events.indexOf("http-finished"));
+    expect(events.at(-1)).toBe("store");
+  } finally {
+    activity.inFlight = 0; releaseRequest(); socket.close(); peer?.terminate();
+    await Promise.allSettled([...(response ? [response] : []), ...(shutdown ? [shutdown] : [])]);
+    await listener.stop(true);
+  }
+}, 10_000);
+
+test("desktop shutdown never repairs a WebSocket drain without known zero HTTP work and an owned transport hook", async () => {
+  for (const counters of [{ pendingRequests: undefined, stopScripts: async () => {} }, { pendingRequests: 0, stopScripts: undefined }]) {
+    const stops: Array<boolean | undefined> = [];
+    const runtime = new ManagedDesktopRuntime({
+      server: { pendingWebSockets: 1, ...counters, stop: force => { stops.push(force); return new Promise<void>(() => {}); } },
+      admission: admission(),
+      store: { listLaunches: () => [], close: () => {} }, launcher: { stop: async () => true }, shutdownTimeoutMs: 20,
+    });
+    await expect(runtime.shutdown()).rejects.toThrow("desktop shutdown deadline expired");
+    expect(stops).toEqual([false]);
+  }
+});
+
+test("an initial listener failure remains a shutdown failure after owned transport cleanup", async () => {
+  const events: string[] = [];
+  const runtime = new ManagedDesktopRuntime({
+    server: { pendingRequests: 0, pendingWebSockets: 1,
+      stop: async force => { events.push(`listener:${force}`); throw new Error("initial listener failure"); },
+      stopScripts: async () => { events.push("scripts"); },
+    },
+    admission: admission(),
+    store: { listLaunches: () => [], close: () => { events.push("store"); } }, launcher: { stop: async () => true },
+  });
+  await expect(runtime.shutdown()).rejects.toThrow("initial listener failure");
+  expect(events).toEqual(["listener:false", "scripts", "store"]);
+});
+
+test("a previously accepted late WebSocket upgrade cannot strand shutdown after owned transport cleanup", async () => {
+  let sockets = 0, http = 1;
+  const events: string[] = [];
+  const runtime = new ManagedDesktopRuntime({
+    server: {
+      get pendingRequests() { return http; }, get pendingWebSockets() { return sockets; },
+      stop(force) {
+        events.push(`listener:${force}`);
+        if (force) { expect(http).toBe(0); return Promise.resolve(); }
+        expect(sockets).toBe(0); return new Promise<void>(() => {});
+      },
+      async stopScripts() {
+        // An accepted upgrade finishes opening while owned sessions are being closed.
+        sockets = 1; http = 0; events.push("owned-transports-closed");
+      },
+    },
+    admission: admission(),
+    store: { listLaunches: () => [{ profileId: "owned" }], close: () => { events.push("store"); } },
+    launcher: { stop: async () => { events.push("browser"); return true; } }, shutdownTimeoutMs: 100,
+  });
+  await runtime.shutdown();
+  expect(events).toEqual(["listener:false", "owned-transports-closed", "listener:true", "browser", "store"]);
+});
+
 test("desktop shutdown attempts both listener stops when one fails", async () => {
   const events: string[] = [];
   const runtime = new ManagedDesktopRuntime({

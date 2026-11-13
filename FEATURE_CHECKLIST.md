@@ -1,6 +1,6 @@
 # GameBrowser — complete requested feature checklist
 
-Checked items have been verified in the named build or surface. **Windows beta 78 is the current published installer.** Beta 81 source now includes the restored Live workspace and improved UI, verified through rendered-browser and protocol checks. Its installed Windows release gate and publication are still pending.
+Checked items have been verified in the named build or surface. **Windows beta 78 is the current published installer.** Beta 82 source now includes the restored Live workspace and improved UI, verified through rendered-browser and protocol checks. Its installed Windows release gate and publication are still pending.
 
 ## Branding, Windows and delivery
 
@@ -56,7 +56,7 @@ Checked items have been verified in the named build or surface. **Windows beta 7
 
 These RAM values are soft targets, not a cap on total browser-process memory or a physical RAM reservation. Chromium's heap limit can be visible to websites. Mobile-sized presets change dimensions; they do not emulate a mobile OS or touch hardware.
 
-## Live workspace — implemented in beta 81 source; installed Windows gate pending
+## Live workspace — implemented in beta 82 source; final Windows gate pending
 
 - [x] Make Live workspace prominent in GameBrowser and open it after the Local/Cloud setup flow.
 - [x] Restore live browser tiles with real frames, running state and per-profile controls.
@@ -78,7 +78,8 @@ These RAM values are soft targets, not a cap on total browser-process memory or 
 - [x] Preserve current Cloud authorization, sharing and MCP functionality alongside the workspace.
 - [x] Improved, consistent GameBrowser UI with legible controls, clear navigation and responsive layouts.
 - [x] Verify real browser frames, tabs, roles and follower actions through the rendered workspace.
-- [ ] Build and test the installed Windows app's actual Live workspace, including mixed Chromium Admin / Firefox Follower actions, before publishing the new installer.
+- [x] Candidate beta 81 installed Windows Live checks: Firefox frames/input/tabs, exact Admin/Follower colors, mixed Chromium Admin / Firefox Follower actions, Stop keeping both browsers alive and follower reopening. This candidate remains unpublished.
+- [ ] Pass normal desktop shutdown, sidecar cleanup and uninstall, then publish the validated installer.
 
 ## Cloud, sharing, MCP and agents
 
@@ -101,6 +102,7 @@ Cloud creation, identity editing and sharing use the existing Profiles/Settings 
 - [x] Beta 79 source regression: 2,363 passed, 11 skipped; focused follow-up native-bridge checks passed.
 - [x] Beta 80 source regression: 2,382 passed, 11 skipped; Firefox launch-geometry persistence, small viewports and existing-profile compatibility checked.
 - [x] Beta 81 source regression: 2,386 passed, 11 skipped; isolated Node checks verify active request and queued-inspection deadlines without unrelated process handles.
+- [x] Beta 82 source regression: 2,393 passed, 11 skipped; real WebSocket shutdown tests preserve active HTTP/lifecycle work, owned agent cleanup and browser capture ordering.
 - [x] Rendered desktop/mobile UI, actual source navigation, recoverable Trash and profile controls verified.
 - [x] Independent Local protocol acceptance: 11 real-browser checks, including exact-once following and saved session restore.
 - [x] Independent Cloud boundary acceptance: 7 checks with real browsers and a simulated service, including transient network recovery, revocation and account isolation.

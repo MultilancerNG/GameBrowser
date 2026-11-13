@@ -34,6 +34,10 @@ interface PendingCredentialRequest {
 
 interface ManagedServer {
   stop(closeActiveConnections?: boolean): void | Promise<void>;
+  /** Bun's counters let shutdown preserve every active HTTP exchange. */
+  readonly pendingRequests?: number;
+  readonly pendingWebSockets?: number;
+  /** Quiesce owned WebSocket sessions and script producers before listener drain/capture. */
   stopScripts?(): Promise<void>;
 }
 
@@ -198,10 +202,49 @@ async function beforeDeadline<T>(pending: Promise<T>, deadline: number): Promise
   }
 }
 
-async function stopServers(servers: ManagedServer[]): Promise<void> {
-  const results = await Promise.allSettled(
-    servers.map((server) => Promise.resolve().then(() => server.stop(false))),
-  );
+interface ListenerStop {
+  server: ManagedServer;
+  hadWebSockets: boolean;
+  settled: boolean;
+  failed: boolean;
+  error?: unknown;
+  pending: Promise<void>;
+}
+
+function pendingHttp(server: ManagedServer): number | undefined {
+  const count = server.pendingRequests;
+  return Number.isSafeInteger(count) && Number(count) >= 0 ? count : undefined;
+}
+
+function hasWebSockets(server: ManagedServer): boolean {
+  const count = server.pendingWebSockets;
+  return Number.isSafeInteger(count) && Number(count) > 0;
+}
+
+/** Request every listener stop synchronously, without waiting on its open UI sockets. */
+function requestServerStops(servers: ManagedServer[]): ListenerStop[] {
+  return servers.map(server => {
+    const stop: ListenerStop = { server, hadWebSockets: hasWebSockets(server),
+      settled: false, failed: false, pending: Promise.resolve() };
+    const failed = (error: unknown) => { stop.settled = true; stop.failed = true; stop.error = error; };
+    try {
+      stop.pending = Promise.resolve(server.stop(false)).then(() => { stop.settled = true; }, failed);
+    } catch (error) { failed(error); }
+    return stop;
+  });
+}
+
+async function finishServerStops(stops: ListenerStop[], quiescedServer?: ManagedServer): Promise<void> {
+  const results = await Promise.allSettled(stops.map(async stop => {
+    if (!stop.settled && (stop.hadWebSockets || hasWebSockets(stop.server))
+      && stop.server === quiescedServer && pendingHttp(stop.server) === 0) {
+      // Bun 1.2.21 can retain the first graceful-stop promise after a WebSocket
+      // closes. Owned sessions are already closed and all HTTP/lifecycle work
+      // has drained, so finish only its transport bookkeeping with a fresh stop.
+      await stop.server.stop(true);
+    } else await stop.pending;
+    if (stop.failed) throw stop.error instanceof Error ? stop.error : new Error("desktop listener shutdown failed");
+  }));
   const failure = results.find((result) => result.status === "rejected");
   if (failure?.status === "rejected") throw failure.reason;
 }
@@ -232,20 +275,22 @@ export class ManagedDesktopRuntime {
     const deadline = Date.now() + shutdownTimeoutMs;
     let failure: unknown;
     try {
-      await beforeDeadline(stopServers([
+      const listeners = requestServerStops([
         server,
         ...(automationServer ? [automationServer] : []),
-      ]), deadline);
+      ]);
       await beforeDeadline(server.stopScripts?.() ?? Promise.resolve(), deadline);
       try {
         await beforeDeadline(Promise.resolve(stopInbox()), deadline);
       } catch (error) {
         failure ??= error;
       }
-      while (admission.stats().inFlight > 0 || admission.stats().queued > 0) {
+      while (admission.stats().inFlight > 0 || admission.stats().queued > 0
+        || listeners.some(listener => Number(pendingHttp(listener.server)) > 0)) {
         if (Date.now() >= deadline) throw new Error("lifecycle requests did not settle before desktop shutdown");
         await wait(25);
       }
+      await beforeDeadline(finishServerStops(listeners, server.stopScripts ? server : undefined), deadline);
 
       if (remoteShutdown) {
         const remainingMs = deadline - Date.now();
