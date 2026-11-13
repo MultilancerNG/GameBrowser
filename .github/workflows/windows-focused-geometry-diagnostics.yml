@@ -1,0 +1,80 @@
+name: Inspect beta 80 Windows geometry tests
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/windows-focused-geometry-diagnostics.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  focused:
+    if: github.repository == 'MultilancerNG/GameBrowser'
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 18a8f6d7ad0aae4b3f9ef55536c73a13236a3064
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - run: bun install --frozen-lockfile
+      - name: Run bounded changed-file tests without publishing raw logs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          $testProcess = [Diagnostics.Process]::new()
+          $testProcess.StartInfo = [Diagnostics.ProcessStartInfo]::new()
+          $testProcess.StartInfo.FileName = (Get-Command bun).Source
+          foreach ($argument in @('test', 'launcher-firefox.test.ts', 'store.test.ts', 'workspace/viewport.bridge.test.ts')) {
+            $testProcess.StartInfo.ArgumentList.Add($argument)
+          }
+          $testProcess.StartInfo.UseShellExecute = $false
+          $testProcess.StartInfo.CreateNoWindow = $true
+          $testProcess.StartInfo.RedirectStandardOutput = $true
+          $testProcess.StartInfo.RedirectStandardError = $true
+          $timedOut = $false
+          $completed = $false
+          $exitCode = $null
+          try {
+            if (-not $testProcess.Start()) { throw 'Focused test process could not start' }
+            $stdout = $testProcess.StandardOutput.ReadToEndAsync()
+            $stderr = $testProcess.StandardError.ReadToEndAsync()
+            $completed = $testProcess.WaitForExit(120000)
+            if (-not $completed) {
+              $timedOut = $true
+              $testProcess.Kill($true)
+              $completed = $testProcess.WaitForExit(5000)
+            }
+            if ($completed) { $exitCode = $testProcess.ExitCode }
+            $outText = if ($stdout.Wait(1000)) { $stdout.Result } else { '[stdout did not close within the evidence bound]' }
+            $errText = if ($stderr.Wait(1000)) { $stderr.Result } else { '[stderr did not close within the evidence bound]' }
+            if ($outText.Length -gt 2097152) { $outText = $outText.Substring($outText.Length - 2097152) }
+            if ($errText.Length -gt 2097152) { $errText = $errText.Substring($errText.Length - 2097152) }
+            [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/focused.stdout.txt'), $outText)
+            [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/focused.stderr.txt'), $errText)
+            $plain = [regex]::Replace("$outText`n$errText", '\x1b\[[0-?]*[ -/]*[@-~]', '')
+            $counts = @{}
+            foreach ($label in @('pass', 'fail', 'skip')) {
+              $match = [regex]::Match($plain, "(?m)^\s*(\d{1,7})\s+$label\s*`r?$")
+              $counts[$label] = if ($match.Success) { [int]$match.Groups[1].Value } else { $null }
+            }
+            $summary = [ordered]@{ diagnostic = 'beta80-focused-geometry'; completed = $completed; timedOut = $timedOut;
+              exitCode = $exitCode; passed = $counts.pass; failed = $counts.fail; skipped = $counts.skip }
+            $json = $summary | ConvertTo-Json -Compress
+            [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/focused.summary.json'), $json)
+            # Fixed keys, numeric counts and booleans only; raw test output stays in the private artifact.
+            Write-Output "::notice title=Bounded Windows focused test counts::$json"
+            if ($timedOut -or -not $completed -or $exitCode -ne 0 -or $counts.pass -lt 1 -or $counts.fail -ne 0) { exit 1 }
+          } finally {
+            try { if ($testProcess.StartTime -and -not $testProcess.HasExited) { $testProcess.Kill($true); $null = $testProcess.WaitForExit(5000) } } catch { }
+            $testProcess.Dispose()
+          }
+      - name: Retain private focused test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta80-windows-focused-geometry
+          path: artifacts/focused.*
+          if-no-files-found: ignore
