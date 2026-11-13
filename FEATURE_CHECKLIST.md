@@ -1,73 +1,108 @@
-# GameBrowser feature checklist
+# GameBrowser — complete requested feature checklist
 
-This distinguishes implemented desktop code from live-service and release validation. Windows beta 78 is published and has passed its installed Windows smoke check, including Local MCP initialization, tool listing and agent discovery. The download page points to its verified full installer.
+Checked items have been verified in the named build or surface. **Windows beta 78 is the current published installer.** Beta 79 source now includes the restored Live workspace and improved UI, verified through rendered-browser and protocol checks. Its installed Windows release gate and publication are still pending.
 
-## Implemented and verified in source
+## Branding, Windows and delivery
 
-- [x] GameBrowser branding and Solomon Gbeta / solomon.ng attribution.
-- [x] Local mode without an account or AliasMode Cloud connection.
-- [x] Restored optional Cloud client, account verification, workspace sync and device controls.
-- [x] Profile/folder view/edit grants and admin-only grant changes.
-- [x] Bulk selection, recoverable deletion to Trash, restoration and permission-aware purge.
-- [x] Separate profile directories, persisted identities and new-profile fingerprint seed collision checks.
-- [x] Desktop and mobile-sized screen presets editable on existing profiles.
-- [x] Per-device manual order, drag handles, keyboard movement and selected-first focus.
-- [x] Distinct violet Admin and teal Follower role styling.
-- [x] Local MCP helper, remote connector and agent client integration code.
-- [x] Group/profile sharing shortcuts to Settings → Team invitation controls (UI tested with mocked Cloud).
-- [x] Explicit browser action following: Chromium Admin, Chromium or Firefox followers.
-- [x] Real Chromium tests for click, input, checkbox/select, keyboard, navigation and independent cookies.
-- [x] Trusted-event capture isolated from website scripts, bounded queues and visible follower errors.
-- [x] Stop detaches mirroring without closing the browser profiles.
-- [x] Cyber download page, direct Windows download, source links/features section removed as requested.
-- [x] Full/slim Windows installers and SHA-256 checksums published for beta 78.
-- [x] Published beta 78 passed a fresh Windows install/start/Local-mode/helper/shutdown/uninstall check.
-- [x] Installed Windows Local MCP initialization, tools/list, and agent discovery passed.
-- [x] AliasMode-derived profile-list dashboard and its controls retained.
-- [x] Import supported TXT/CSV/JSON/XLSX profile exports or pasted account data.
-- [x] Discoverable export controls for one profile, selected profiles or the filtered view.
-- [x] TXT/XLSX identity and cookie exports; CSV account credentials, with Cloud edit checks.
+- [x] GameBrowser product name, Windows executable and installer branding.
+- [x] Developed by Solomon Gbeta, with solomon.ng attribution and preserved upstream licenses.
+- [x] Source uploaded to MultilancerNG/GameBrowser on GitHub.
+- [x] Windows x64 full/offline and slim installers, with SHA-256 checksums.
+- [x] Beta 78 passed fresh installed-app startup, Local mode, Local MCP, agent discovery, shutdown and uninstall checks.
+- [x] Cyber-style download landing page and direct installer download.
+- [x] Removed landing-page GitHub/source links and feature section as requested.
+- [x] GitHub Pages deployment of the download page.
+- [ ] Publish the prepared site through Sites.
+- [ ] Assign and verify gamebrowser.fiam.dev through Sites and Cloudflare, including HTTPS.
 
-## Latest published desktop release: Windows beta 78
+## Profiles and separate identities — shipped in beta 78
 
-- [x] Freeze sync assignments by default when a follower is clicked; explicit Apply selection/Stop.
-- [x] Optional Auto-follow Admin selection; automatically apply other selected profiles as followers.
-- [x] Auto-follow starts off and turns off on Stop or account/workspace changes.
-- [x] Save/forget/resume sync groups by authorized account without storing browser credentials.
-- [x] Retain groups while browsers are closed and reconnect future actions when profiles reopen.
-- [x] Full regression: 2,107 passed, 10 skipped; focused final UI/API/selection tests passed.
-- [x] Browser QA covers rapid Admin changes, pending Stop, Firefox followers and import/export roundtrips.
-- [x] Beta 78 full/slim installers built and installed Windows smoke passed.
-- [x] Beta 78 Windows build, installed-app validation and publication completed; download updated.
+- [x] Local mode without an account or AliasMode Cloud connection; profile data stays on the computer.
+- [x] Separate profile browser directories, cookies, storage and saved identity settings.
+- [x] New-profile fingerprint seed collision checks, including profiles in Trash.
+- [x] Preserve supplied identities and sessions when importing full profile exports.
+- [x] Bulk selection and recoverable multi-profile deletion, Trash restoration and permission-aware purge.
+- [x] Desktop and mobile-sized viewport presets, editable on existing profiles; custom dimensions.
+- [x] Per-device saved order, drag/drop and keyboard rearrangement in the profile list.
+- [x] Most recently selected profile appears first in the profile list.
+- [x] Import readable TXT, CSV, JSON and XLSX exports or supported pasted account data.
+- [x] Export one profile, selected profiles or the current filtered view.
+- [x] TXT/XLSX preserve supported identity, cookies and session data; CSV exports supported account credentials.
+- [x] Cloud export requires edit access to every exported profile.
 
-## Browser settings included in Windows beta 78
+## Admin, followers and sessions — shipped in beta 78 profile list
 
-- [x] Device-local resource policy API with Auto/manual RAM targets and Cloud edit authorization.
-- [x] Opt-in heap/cache optimization on new launches; existing browsers and identities retained.
-- [x] Bookmarks-bar engine preferences and preservation of existing bookmark folders.
-- [x] Browser settings controls verified in light/dark/mobile layouts, including persistence and errors.
-- [x] Saving settings leaves running browsers, following groups and unsaved profile edits intact.
-- [x] Auto allocation accounts for concurrent profile starts as well as running browsers.
+- [x] Explicit Admin profile selector, with violet Admin and teal Follower role styling.
+- [x] Chromium Admin controls Chromium or Firefox followers using one mirroring worker.
+- [x] Mirror supported clicks, typing, keyboard, select/checkbox changes, scrolling and navigation while retaining separate sessions.
+- [x] Optional Auto-follow Admin selection; other selected profiles become followers automatically.
+- [x] Automatic following starts off; Stop disables the automatic option.
+- [x] Clicking/deselecting a follower leaves assignments intact by default; explicit Apply/Stop changes the group.
+- [x] Save, forget and explicitly resume a following group after an app restart.
+- [x] Retain assignments when browser profiles close and reconnect after they reopen.
+- [x] Reconnection sends future actions only, without replaying old clicks or submissions.
+- [x] Stop following detaches mirroring without closing the browser profiles.
+- [x] Account/access changes require current authorization before control resumes.
 
-RAM settings are soft heap/cache targets, not total-process memory caps. They apply at the next fresh launch and are device-only.
+## Browser settings — shipped in beta 78 profile editor
 
-## Original StakeMode workspace: not included in beta 78
+- [x] RAM budget, MB: Auto or manual target from 128 to 32768 MB.
+- [x] Auto target uses available memory and counts running/reserved/concurrent profile starts.
+- [x] Optional Auto optimize applies supported renderer heap/cache settings at the next fresh launch.
+- [x] Settings are device-local; saving does not close running browsers or change following assignments.
+- [x] Per-profile bookmarks-bar preference, including Always show and preservation of existing behavior.
+- [x] Existing bookmark folders and unrelated browser preferences are preserved.
 
-Inspection of the supplied `AliasMode-Game-stakemode-v0.1.0-preview.2.zip` confirmed that it contains a separate `StakeMode-cli.ts` application and `workspace/` interface. GameBrowser beta 78 does not include that workspace. The earlier statement that the original UI was retained was inaccurate.
+These RAM values are soft targets, not a cap on total browser-process memory or a physical RAM reservation. Chromium's heap limit can be visible to websites. Mobile-sized presets change dimensions; they do not emulate a mobile OS or touch hardware.
 
-- [ ] Restore the original Live workspace browser grid and Admin/Follower board.
-- [ ] Restore Full Admin View and embedded per-profile address/tab controls.
-- [ ] Integrate the original workspace task manager, resource monitor and extension/add-on management.
-- [ ] Verify the restored workspace alongside the current Local/Cloud, MCP and following features.
+## Live workspace — implemented in beta 79 source; installed Windows gate pending
 
-Beta 78's current Admin/Follower controls appear in the profile-list dashboard after selecting at least two profiles (or when a saved/active group exists). Open each selected profile, choose a Chromium Admin, then use Start following. Local following does not require a Cloud account. These controls do not provide the original StakeMode Live workspace.
+- [x] Make Live workspace prominent in GameBrowser and open it after the Local/Cloud setup flow.
+- [x] Restore live browser tiles with real frames, running state and per-profile controls.
+- [x] Restore Full Admin View and return-to-grid navigation.
+- [x] Restore independent address bar, back/forward, reload/stop, tabs and fullscreen controls.
+- [x] Restore explicit Admin/Follower/Manual controls and user-requested pause/manual takeover.
+- [x] Use the existing trusted mirroring controller to avoid duplicate follower actions.
+- [x] Keep follower assignments through tile selection, browser disconnects and navigation.
+- [x] Expose optional automatic Admin following, save/resume and Stop in the Live workspace.
+- [x] Drag/drop saved tile order, selected-first focus and distinct Admin/Follower borders.
+- [x] Expose full profile import/export clearly, separately from configuration-only templates.
+- [x] Restore groups, tags, notes, bookmarks and configuration copies into fresh identities.
+- [x] Restore task manager, live CPU/RAM measurements and ownership-checked Stop/Force close.
+- [x] Expose automatic RAM/optimization/bookmarks settings in the workspace profile settings.
+- [x] Make desktop/mobile presets and custom sizes editable in the restored workspace.
+- [x] Restore Direct/System/Proxy routes and saved proxy management.
+- [x] Restore local Chromium extensions and Firefox XPI add-ons, with assignment and browser UI support.
+- [x] Restore bounded local workflows, outputs and schedules while the app remains open.
+- [x] Preserve current Cloud authorization, sharing and MCP functionality alongside the workspace.
+- [x] Improved, consistent GameBrowser UI with legible controls, clear navigation and responsive layouts.
+- [x] Verify real browser frames, tabs, roles and follower actions through the rendered workspace.
+- [ ] Build and test the installed Windows app's actual Live workspace, including mixed Chromium Admin / Firefox Follower actions, before publishing the new installer.
 
-## Requires external access or configuration
+## Cloud, sharing, MCP and agents
 
-- [ ] Live Cloud account, sharing, synchronization and device-revocation checks.
-- [ ] Live remote MCP/agent end-to-end checks against a compatible Cloud service.
-- [ ] Sites publication using an available Sites publishing connection.
-- [ ] Configure/confirm gamebrowser.fiam.dev through Sites and Cloudflare, including HTTPS.
+- [x] Restored optional compatible Cloud client: verified-account sign-in and shared workspaces.
+- [x] Portable encrypted profile synchronization and device access/revocation client controls.
+- [x] Group/folder and profile view/edit grants with admin-only access changes.
+- [x] Invite members shortcuts from group/profile access to Settings → Team.
+- [x] Invite/share flows tested against mocked Cloud responses; no live invitations sent by QA.
+- [x] Local MCP tools and installed agent-client discovery verified on Windows.
+- [x] Remote MCP connector and agent-client integration code retained.
+- [ ] Verify live Cloud sign-in, invitation delivery, sharing, sync and device revocation against an accessible compatible service.
+- [ ] Verify remote MCP and agent clients against that live service.
+Cloud creation, identity editing and sharing use the existing Profiles/Settings management surfaces. Live workspace lists controllable edit-granted Cloud profiles and uses the Cloud coordinator for their browser lifecycle; view-only profiles remain available in Profiles.
+
+## Validation and remaining external setup
+
+- [x] Beta 78 source regression: 2,107 passed, 10 skipped; focused final UI/API/selection checks passed.
+- [x] Real Chromium following checks, including independent cookies and no replay after reconnect.
+- [x] Actual TXT/XLSX export→import checks preserve identity, credentials, cookies, localStorage and tabs.
+- [x] Beta 79 source regression: 2,363 passed, 11 skipped; focused follow-up native-bridge checks passed.
+- [x] Rendered desktop/mobile UI, actual source navigation, recoverable Trash and profile controls verified.
+- [x] Independent Local protocol acceptance: 11 real-browser checks, including exact-once following and saved session restore.
+- [x] Independent Cloud boundary acceptance: 7 checks with real browsers and a simulated service, including transient network recovery, revocation and account isolation.
+- [x] Visual concept comparison completed for Live grid and Full Admin View, with functional deviations documented.
+- [ ] Publish the next validated Windows installer and update the download page.
 - [ ] Configure a GameBrowser signing key before publishing signed in-app update manifests.
 
-The Cloud service is separate from the public desktop source. Sites and Cloudflare tools are not available in this session, so the domain is not confirmed connected. A network-access draft has been saved for review but is not applied; the environment needs review/save and Publish before the permitted live checks can be retried. No secrets were added. Mobile-sized presets change dimensions; they do not emulate a mobile operating system or touch hardware.
+The hosted Cloud backend is separate from the public desktop source. Sites/Cloudflare tools are unavailable in this session, and the custom domain is unverified. A network-access draft was saved but has not been applied; it requires review/save and Publish in Environment settings. No credentials were added to chat or source.

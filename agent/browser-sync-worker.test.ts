@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { isSafeProfileId } from "../profile-id.ts";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 import {
@@ -193,4 +194,62 @@ test.skipIf(!process.env.GAMEBROWSER_SYNC_BROWSER)("real browser mirroring prese
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
   expect(stdout).toContain("mirroring integration passed");
+}, 60_000);
+
+test("standalone worker profile IDs agree with the central128-character cross-platform grammar", () => {
+  for (const id of ["a", "A_9", "id-" + "x".repeat(125), "x".repeat(129), "CON", "nul", "COM1", "lpt9", "COM10", "_first", "-first", "a.b", "a/b", "", "é"]) {
+    const value = { ...config(), admin: { ...config().admin, id } };
+    if (isSafeProfileId(id)) expect(validateSyncConfiguration(value).admin.id).toBe(id);
+    else expect(() => validateSyncConfiguration(value)).toThrow();
+  }
+});
+
+test("workspace policy validates exact approved origins and safe explicit pause IDs", () => {
+  const policy = { origins: ["https://site.test", "http://127.0.0.1:39123"], pacing: "paced", sensitiveControls: "manual", pausedProfileIds: ["follower"] };
+  expect(validateSyncConfiguration({ ...config(), policy }).policy).toEqual(policy);
+  for (const override of [{ origins: ["http://remote.test"] }, { origins: ["https://site.test/path"] }, { pacing: "anything" }, { sensitiveControls: "mirror" }, { pausedProfileIds: ["CON"] }]) expect(() => validateSyncConfiguration({ ...config(), policy: { ...policy, ...override } })).toThrow();
+});
+
+const policyIntegration = String.raw`
+import assert from 'node:assert/strict';
+import {createServer} from 'node:http';
+import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+import {pathToFileURL} from 'node:url';
+import {spawn} from 'node:child_process';
+const {chromium}=await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const contexts=[],roots=[],endpoints=[];let server,child;let allOutput='';
+const wait=async(fn)=>{const until=Date.now()+10000;while(Date.now()<until){if(await fn())return;await new Promise(r=>setTimeout(r,20));}throw new Error('workspace policy assertion timed out');};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+try {
+ const html='<!doctype html><input id="search" type="search"><button id="safe" type="button"><span>Rules</span></button><button id="placeBet" type="button"><span>Confirm</span></button><script>window.safe=0;window.financial=0;document.querySelector("#safe").onclick=()=>window.safe++;document.querySelector("#placeBet").onclick=()=>window.financial++;</script>';
+ server=createServer((req,res)=>{res.writeHead(200,{'Content-Type':'text/html'});res.end(html+(req.url.startsWith('/login')?'<input id="password" type="password">':''));});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
+ for(const identity of ['admin','follower']){const root=mkdtempSync(join(tmpdir(),'gamebrowser-policy-'));roots.push(root);const context=await chromium.launchPersistentContext(root,{executablePath:process.env.GAMEBROWSER_SYNC_BROWSER,headless:true,args:['--no-sandbox','--remote-debugging-port=0'],viewport:{width:900,height:700}});contexts.push(context);endpoints.push('http://127.0.0.1:'+readFileSync(join(root,'DevToolsActivePort'),'utf8').split('\n')[0]);await context.pages()[0].goto(base+'/one?identity='+identity);}
+ const admin=contexts[0].pages()[0],follower=contexts[1].pages()[0];
+ const reset=async()=>{await admin.goto(base+'/one?identity=admin');await follower.goto(base+'/one?identity=follower');};
+ const start=async(override={})=>{const events=[];let pending='';child=spawn(process.execPath,[process.env.SYNC_WORKER],{stdio:['pipe','pipe','pipe']});child.stdout.on('data',part=>{allOutput+=part;pending+=part;let end;while((end=pending.indexOf('\n'))>=0){events.push(JSON.parse(pending.slice(0,end)));pending=pending.slice(end+1);}});child.stderr.on('data',part=>{allOutput+=part;});child.stdin.write(JSON.stringify({type:'start',admin:{id:'admin',engine:'chromium',endpoint:endpoints[0]},followers:[{id:'follower',engine:'chromium',endpoint:endpoints[1]}],policy:{origins:[base],pacing:'fast',sensitiveControls:'manual',...override}})+'\n');await wait(()=>events.some(e=>e.type==='ready'));return events;};
+ const stop=async()=>{const done=new Promise(r=>child.once('exit',r));child.stdin.write('{"type":"stop"}\n');await done;};
+ let events=await start();await admin.locator('#search').fill('safe search');await wait(async()=>await follower.locator('#search').inputValue()==='safe search');
+ await admin.locator('#safe span').click();await wait(async()=>await follower.evaluate(()=>window.safe)===1);
+ await admin.locator('#placeBet span').click();await wait(()=>events.some(e=>e.reason==='policy-blocked'));await sleep(120);assert.equal(await follower.evaluate(()=>window.financial),0);await stop();
+ await reset();events=await start();await admin.goto(base+'/login');await wait(()=>events.some(e=>e.reason==='policy-blocked'));await admin.locator('#password').fill('PRIVATE_PASSWORD_VALUE');assert.equal(new URL(follower.url()).pathname,'/one');await stop();
+ await reset();events=await start();await follower.locator('#search').evaluate(el=>el.type='password');await admin.locator('#search').fill('PRIVATE_TARGET_VALUE');await wait(()=>events.some(e=>e.type==='follower-error'&&e.reason==='policy-blocked'));assert.equal(await follower.locator('#search').inputValue(),'');await stop();
+ await reset();events=await start({pausedProfileIds:['follower']});await admin.locator('#search').fill('paused follower');await admin.locator('#safe').click();await sleep(250);assert.equal(await follower.locator('#search').inputValue(),'');assert.equal(await follower.evaluate(()=>window.safe),0);assert.equal(events.some(e=>e.type==='failure'||e.type==='follower-error'),false);await stop();
+ await reset();events=await start({pausedProfileIds:['admin']});await admin.locator('#search').fill('paused Admin');await admin.locator('#placeBet').click();await sleep(250);assert.equal(await follower.locator('#search').inputValue(),'');assert.equal(events.some(e=>e.type==='failure'||e.type==='follower-error'),false);await stop();
+ await reset();events=await start({pacing:'paced'});const sentAt=Date.now();await admin.locator('#search').fill('paced search');await wait(async()=>await follower.locator('#search').inputValue()==='paced search');assert.ok(Date.now()-sentAt>=440);await admin.locator('#search').fill('cancel queued input');await stop();await sleep(1850);assert.equal(await follower.locator('#search').inputValue(),'paced search');
+ await reset();events=await start({origins:[]});await admin.locator('#search').fill('outside origin scope');await wait(()=>events.some(e=>e.reason==='policy-blocked'));assert.equal(await follower.locator('#search').inputValue(),'');await stop();
+ assert.equal(allOutput.includes('PRIVATE_PASSWORD_VALUE'),false);assert.equal(allOutput.includes('PRIVATE_TARGET_VALUE'),false);assert.equal(allOutput.includes(base),false);assert.equal(allOutput.includes('safe search'),false);
+ console.log('workspace policy integration passed: exact scope, safe text/click, nested financial and authentication guards, follower target verification, Admin/follower pause, pacing, cancel without replay, no values or URLs logged');
+} finally {if(child&&!child.killed)child.kill();await Promise.allSettled(contexts.map(c=>c.close()));if(server)await new Promise(r=>server.close(r));for(const root of roots)rmSync(root,{recursive:true,force:true});}
+`;
+
+test.skipIf(!process.env.GAMEBROWSER_SYNC_BROWSER)("real workspace worker enforces origin, pacing, sensitive and explicit pause policy", async () => {
+  const child = Bun.spawn(["node", "--input-type=module", "--eval", policyIntegration], {
+    env: { ...process.env, PLAYWRIGHT_MODULE: join(import.meta.dir, "..", "node_modules", "playwright-core", "index.mjs"), SYNC_WORKER: join(import.meta.dir, "browser-sync-worker.mjs") }, stdout: "pipe", stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+  expect(stdout).toContain("workspace policy integration passed");
 }, 60_000);

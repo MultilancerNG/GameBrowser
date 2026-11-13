@@ -12,6 +12,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { extractZipTo } from "../unzip.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
+import { patchFirefoxExtensionUi, type FirefoxExtensionUiPatchMetadata } from "./firefox-extension-ui-patch.ts";
 
 export const NODE_WINDOWS_X64_VERSION = "22.23.2";
 export const NODE_WINDOWS_X64_SHA256 = "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97";
@@ -26,6 +27,7 @@ export interface PreparedFirefoxMetadata {
   sha256: string;
   version: typeof ALIASMODE_FIREFOX_VERSION;
   archiveSha256: string;
+  extensionUiPatch?: FirefoxExtensionUiPatchMetadata;
 }
 
 /** CloakBrowser is not bundled: the app downloads it on first use. */
@@ -48,6 +50,7 @@ export interface PrepareWindowsBundleOptions {
   downloadNode?: () => Promise<Uint8Array>;
   installNode?: (playwrightRoot: string) => Promise<void>;
   firefoxArchive?: FirefoxArchive;
+  patchFirefoxExtensionUi?: typeof patchFirefoxExtensionUi;
 }
 
 async function sha256File(path: string): Promise<string> {
@@ -217,6 +220,7 @@ export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
     "script-runner.py",
     "runtime-client.mjs",
     "browser-sync-worker.mjs",
+    "browser-sync-policy.mjs",
   ]) {
     cpSync(join(cwd, "agent", file), join(agentRoot, file));
   }
@@ -230,6 +234,18 @@ export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
   ]) {
     copyRuntimePackage(cwd, playwrightRoot, dependency, copied);
   }
+}
+
+/** Original Live workspace assets and sync addon, beside the preserved MCP runtime. */
+export function stageLiveWorkspaceRuntime(cwd: string, playwrightRoot: string): void {
+  const root = join(playwrightRoot, "stakemode");
+  mkdirSync(root, { recursive: true });
+  const runtimeFiles = (path: string) => !/\.test\.[cm]?[jt]sx?$/.test(path);
+  cpSync(join(cwd, "workspace"), join(root, "workspace"), { recursive: true, filter: runtimeFiles });
+  mkdirSync(join(root, "extensions"), { recursive: true });
+  cpSync(join(cwd, "extensions", "stakemode-sync"), join(root, "extensions", "stakemode-sync"), { recursive: true, filter: runtimeFiles });
+  mkdirSync(join(root, "notices"), { recursive: true });
+  for (const name of ["LICENSE", "NOTICE"]) cpSync(join(cwd, name), join(root, "notices", name));
 }
 
 export async function prepareWindowsBundle(
@@ -285,7 +301,18 @@ export async function prepareWindowsBundle(
     cpSync(extractedNode, join(playwrightRoot, "node", "node.exe"));
   }
   if (!statSync(join(playwrightRoot, "node", "node.exe")).isFile()) throw new Error("official Node runtime is incomplete");
+  firefox.extensionUiPatch = await (options.patchFirefoxExtensionUi ?? patchFirefoxExtensionUi)(
+    firefoxRoot,
+    process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3"),
+  );
+  const patchSources = join(firefoxRoot, "gamebrowser-patches", "firefox-extension-ui");
+  cpSync(join(import.meta.dir, "..", "patches", "firefox-extension-ui"), patchSources, { recursive: true });
+  writeFileSync(join(patchSources, "APPLIED-PATCH.json"), `${JSON.stringify(firefox.extensionUiPatch, null, 2)}\n`, "utf8");
+  if ((await (options.hashFile ?? sha256File)(join(firefoxRoot, firefox.executable))).toLowerCase() !== firefox.sha256) {
+    throw new Error("Firefox extension compatibility patch changed the native executable");
+  }
   stageAgentRuntime(cwd, playwrightRoot);
+  stageLiveWorkspaceRuntime(cwd, playwrightRoot);
 
   const metadata: PreparedBrowserMetadata = { firefox };
   writeFileSync(join(generated, "browser.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");

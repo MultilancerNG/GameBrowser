@@ -643,7 +643,7 @@ function trustedBrowserEndpoint(value: unknown): string {
   } catch { throw new BrowserSyncError("The browser automation endpoint is invalid", 503); }
 }
 
-function uiBrowserSync(launcher: Launcher, store: ProfileStore, options: UiRuntimeOptions): BrowserSyncLifecycle {
+export function uiBrowserSync(launcher: Launcher, store: ProfileStore, options: UiRuntimeOptions): BrowserSyncLifecycle {
   if (options.browserSync) return options.browserSync;
   const existing = browserSyncRuntimes.get(launcher);
   if (existing) return existing;

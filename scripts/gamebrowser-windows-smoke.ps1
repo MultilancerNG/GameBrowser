@@ -5,7 +5,8 @@ param(
   [Parameter(Mandatory)] [string]$InstallerPath,
   [Parameter(Mandatory)] [string]$ChecksumsPath,
   [Parameter(Mandatory)] [string]$ExpectedVersion,
-  [Parameter(Mandatory)] [string]$ReportPath
+  [Parameter(Mandatory)] [string]$ReportPath,
+  [switch]$RequireLiveWorkspace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +35,9 @@ $installed = $false
 $desktop = $null
 $hiddenModules = $null
 $checkoutModules = Join-Path $env:GITHUB_WORKSPACE 'node_modules'
+$debugPort = $null
+$reportParent = Split-Path $report -Parent
+if ($reportParent) { New-Item -ItemType Directory -Path $reportParent -Force | Out-Null }
 
 function Test-WithinRoot([string]$Path, [string]$Root) {
   if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -137,7 +141,25 @@ try {
   # A fresh Local workspace has no profiles, so startup cannot download or launch a browser engine.
   [IO.File]::WriteAllText((Join-Path $stateRoot 'config.json'), '{"version":1,"mode":"local","localAnalytics":false}')
   $descriptorPath = Join-Path $stateRoot 'agent-runtime.json'
-  $desktop = Start-Process -FilePath $app -ArgumentList @('--background') -WorkingDirectory $runRoot -PassThru
+  if ($RequireLiveWorkspace) {
+    # Bind an unused loopback port, then pass it only to this fresh installed process.
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    $listener.Start()
+    $debugPort = $listener.LocalEndpoint.Port
+    $listener.Stop()
+    $previousDebug = $env:ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG
+    $previousDebugPort = $env:ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG_PORT
+    try {
+      $env:ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG = '1'
+      $env:ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG_PORT = [string]$debugPort
+      $desktop = Start-Process -FilePath $app -ArgumentList @('--background') -WorkingDirectory $runRoot -PassThru
+    } finally {
+      $env:ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG = $previousDebug
+      $env:ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG_PORT = $previousDebugPort
+    }
+  } else {
+    $desktop = Start-Process -FilePath $app -ArgumentList @('--background') -WorkingDirectory $runRoot -PassThru
+  }
   $deadline = [DateTime]::UtcNow.AddSeconds(180)
   $descriptor = $null
   $health = $null
@@ -258,6 +280,63 @@ try {
     throw 'Local MCP stdio shutdown stopped or replaced the desktop runtime'
   }
   $checks.installedMcpStdio = $true
+
+  if ($RequireLiveWorkspace) {
+    $stage = 'installed-live-workspace'
+    $liveScript = Join-Path $PSScriptRoot 'gamebrowser-installed-workspace-smoke.mjs'
+    $liveReport = [IO.Path]::ChangeExtension($report, '.workspace.json')
+    $liveScreenshot = [IO.Path]::ChangeExtension($report, '.workspace.png')
+    $liveOut = [IO.Path]::ChangeExtension($report, '.workspace.stdout.txt')
+    $liveErr = [IO.Path]::ChangeExtension($report, '.workspace.stderr.txt')
+    Run-WithTimeout -Executable $app -Arguments @() -TimeoutMs 15000
+    $live = [Diagnostics.Process]::new()
+    $live.StartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $live.StartInfo.FileName = $node
+    foreach ($argument in @($liveScript, (Join-Path $installRoot 'playwright'), [string]$debugPort, $base, $liveScreenshot, $liveReport)) {
+      $live.StartInfo.ArgumentList.Add($argument)
+    }
+    $live.StartInfo.WorkingDirectory = $runRoot
+    $live.StartInfo.UseShellExecute = $false
+    $live.StartInfo.CreateNoWindow = $true
+    $live.StartInfo.RedirectStandardOutput = $true
+    $live.StartInfo.RedirectStandardError = $true
+    try {
+      if (-not $live.Start()) { throw 'Installed Live workspace inspector did not start' }
+      $liveStdout = $live.StandardOutput.ReadToEndAsync()
+      $liveStderr = $live.StandardError.ReadToEndAsync()
+      if (-not $live.WaitForExit(750000)) {
+        $live.Kill($true)
+        throw 'Installed Live workspace inspection timed out'
+      }
+      [IO.File]::WriteAllText($liveOut, $liveStdout.Result)
+      [IO.File]::WriteAllText($liveErr, $liveStderr.Result)
+      if ($live.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $liveReport) {
+          $detail = Get-Content -LiteralPath $liveReport -Raw | ConvertFrom-Json
+          throw "Installed Live workspace failed at $($detail.stage): $($detail.error)"
+        }
+        throw 'Installed Live workspace inspector could not execute; see packaged runtime smoke evidence'
+      }
+      $liveResult = Get-Content -LiteralPath $liveReport -Raw | ConvertFrom-Json
+      if (-not $liveResult.success -or -not $liveResult.checks.actualBundledFirefoxLaunch -or
+          -not $liveResult.checks.liveManualClickAndTyping -or -not $liveResult.checks.actualFirefoxTabsAndNavigation -or
+          -not $liveResult.checks.actualChromiumAdminFirefoxFollower -or -not $liveResult.checks.stopFollowingKeepsBrowsersAlive -or
+          -not $liveResult.checks.mixedFollowingAfterFirefoxReopen) {
+        throw 'Installed Live workspace did not validate its real Firefox controls'
+      }
+      $checks.installedLiveWorkspace = $true
+      $checks.bundledFirefoxLiveFrames = $true
+      $checks.realFirefoxManualInputAndTabs = $true
+      $checks.actualChromiumAdminFirefoxFollower = $true
+      $checks.followingStopAndFirefoxReopen = $true
+      $checks.bundledFirefoxWithoutDownload = $liveResult.checks.bundledFirefoxWithoutDownload -eq $true
+    } finally {
+      try { if ($live.StartTime -and -not $live.HasExited) { $live.Kill($true); $null = $live.WaitForExit(15000) } } catch { }
+      $live.Dispose()
+    }
+    $downloads = Invoke-RestMethod "$base/ui/api/runtime-downloads" -TimeoutSec 5
+    if (@($downloads.downloads).Count -ne 0) { throw 'Owned smoke browser runtime download did not finish' }
+  }
 
   $stage = 'desktop-window-shutdown'
   Run-WithTimeout -Executable $app -Arguments @() -TimeoutMs 15000

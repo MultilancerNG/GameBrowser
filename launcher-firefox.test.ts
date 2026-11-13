@@ -35,6 +35,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   let launches = 0;
   let receivedConfig: unknown;
   let receivedPrefs: unknown;
+  let receivedInput: Parameters<NonNullable<LauncherOptions["firefoxRuntime"]>["start"]>[0] | undefined;
   let labeled = 0;
   let startupPreferences = "";
   let browserExecutable = "/fake/firefox.exe";
@@ -72,6 +73,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
         expect(store.getLaunch(profile.id)?.firefoxOwner?.generation).toBe(reservation.generation);
         receivedConfig = args.config;
         receivedPrefs = args.prefs;
+        receivedInput = args;
         startupPreferences = readFileSync(join(args.userDataDir, "user.js"), "utf8");
         ownerAlive = true;
         await hooks?.onSpawn?.({ ...reservation, pid: 201, browserPid: 0 });
@@ -96,6 +98,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   return {
     store, profile: store.getProfile(profile.id)!, options, killed, launcher: new Launcher(options),
     launches: () => launches, config: () => receivedConfig, prefs: () => receivedPrefs, labeled: () => labeled,
+    input: () => receivedInput,
     startupPreferences: () => startupPreferences, navigated, fontPacks,
     failFontPacks: (error?: Error) => { fontPackFailure = error; },
     setProcessPaths: (browser: string, owner: string) => {
@@ -160,6 +163,73 @@ test("Firefox resources change startup cache preferences without editing its sav
   expect(f.store.getLaunch(f.profile.id)!.persona).toEqual(first.persona);
   expect(f.store.getLaunch(f.profile.id)!.personaDigest).toBe(first.personaDigest);
   await launcher.stop(f.profile.id);
+});
+
+test("Firefox workspace addons and route reach the owned runtime without rewriting saved proxy credentials", async () => {
+  const f = fixture();
+  const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "account", pass: "secret" };
+  f.store.upsertProfile({ ...f.profile, proxy });
+  let mode: "direct" | "system" = "direct";
+  const addons = [join(f.options.dataRoot!, "managed-addon")];
+  const uuids = { "managed@example.test": "1a05d4a9-a4b7-4bc7-8522-5a6fbffabf3d" };
+  const launcher = new Launcher(f.options);
+  launcher.setWorkspaceHooks({
+    profileNetworkMode: () => mode, profileFirefoxAddonDirs: () => addons, profileFirefoxAddonUUIDs: () => uuids,
+  });
+  await launcher.start(f.profile.id, [], { headless: true });
+  expect(f.input()).toMatchObject({ headless: true, networkMode: "direct", addonDirs: addons, addonUUIDs: uuids });
+  expect(f.input()?.proxy).toBeUndefined();
+  expect(f.store.getLaunch(f.profile.id)?.networkMode).toBe("direct");
+  mode = "system";
+  expect((await launcher.start(f.profile.id, [], { headless: true })).reattached).toBe(true);
+  expect(f.launches()).toBe(1);
+  expect(f.input()?.networkMode).toBe("direct");
+  expect(f.store.getProfile(f.profile.id)?.proxy).toEqual(proxy);
+  await launcher.stop(f.profile.id);
+});
+
+test("empty workspace addon hooks preserve a browser opened before workspace integration", async () => {
+  const f = fixture();
+  const first = await f.launcher.start(f.profile.id);
+  const restarted = new Launcher(f.options);
+  restarted.setWorkspaceHooks({ profileExtensionDirs: () => [], profileFirefoxAddonDirs: () => [], profileFirefoxAddonUUIDs: () => ({}) });
+  expect(await restarted.start(f.profile.id)).toEqual({ ...first, nativeSessionRestored: false, reattached: true });
+  expect(f.launches()).toBe(1);
+  expect(await restarted.certifiedActive(f.profile.id)).toBe(true);
+  await restarted.stop(f.profile.id);
+});
+
+test("Firefox reattach keeps recorded addon paths and UUIDs before workspace hooks are restored", async () => {
+  const f = fixture();
+  let path = join(f.options.dataRoot!, "original-addon");
+  let uuid = "1a05d4a9-a4b7-4bc7-8522-5a6fbffabf3d";
+  const first = new Launcher(f.options);
+  const hooks = { profileFirefoxAddonDirs: () => [path], profileFirefoxAddonUUIDs: () => ({ "managed@example.test": uuid }) };
+  first.setWorkspaceHooks(hooks);
+  const opened = await first.start(f.profile.id);
+  const original = f.store.getLaunch(f.profile.id)!;
+  expect(original.managedExtensions).toEqual({ chromiumDirectories: [], firefoxDirectories: [path], firefoxAddonUUIDs: { "managed@example.test": uuid } });
+  const restarted = new Launcher(f.options);
+  expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false, reattached: true });
+  path = join(f.options.dataRoot!, "replacement-addon");
+  uuid = "bded29e5-03f3-4fba-aa80-42a9df48e524";
+  restarted.setWorkspaceHooks(hooks);
+  expect((await restarted.start(f.profile.id)).reattached).toBe(true);
+  expect(f.launches()).toBe(1);
+  expect(f.killed).toEqual([]);
+  expect(f.store.getLaunch(f.profile.id)!.personaDigest).toBe(original.personaDigest);
+  await restarted.stop(f.profile.id);
+  await restarted.start(f.profile.id);
+  expect(f.input()).toMatchObject({ addonDirs: [path], addonUUIDs: { "managed@example.test": uuid } });
+  await restarted.stop(f.profile.id);
+});
+
+test("Firefox workspace force stop on Linux targets the exact owner tree", async () => {
+  const f = fixture("linux");
+  await f.launcher.start(f.profile.id);
+  expect(await f.launcher.forceStop(f.profile.id, f.store.getLaunch(f.profile.id)!)).toBe(true);
+  expect(f.killed).toEqual([202, 201]);
+  expect(f.store.getLaunch(f.profile.id)).toBeNull();
 });
 
 test("Firefox sets cookies added while closed before its first page, and an edit while open waits for the next start", async () => {

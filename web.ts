@@ -7,6 +7,8 @@
  */
 
 import { join } from "node:path";
+import type { ServerWebSocket } from "bun";
+import { DashboardWorkspace, workspaceSocket, type WorkspaceSocketData } from "./workspace-integration.ts";
 import index from "./web/index.html";
 import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
@@ -79,7 +81,7 @@ export interface DashboardServerOptions {
 
 type AgentSocketData = {
   session: AgentControlSession;
-};
+} | WorkspaceSocketData;
 
 function escapeHtml(s: unknown): string {
   return String(s ?? "").replace(/[&<>"]/g, (c) => (({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }) as Record<string, string>)[c]!);
@@ -273,6 +275,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
   const log = opts.log ?? ((m) => console.log(`[aliasmode] ${m}`));
   const admission = opts.lifecycleAdmission ?? new LifecycleAdmissionController(opts.lifecycleAdmissionOptions);
   const lifecycle = { admission };
+  const liveWorkspace = new DashboardWorkspace({ ...opts, lifecycleAdmission: admission });
   const agentNonce = opts.agentNonce;
   const agentHub = agentNonce
     ? new AgentControlHub({
@@ -314,18 +317,27 @@ export function serveDashboard(opts: DashboardServerOptions) {
     routes: { "/": index },
     websocket: {
       maxPayloadLength: AGENT_CONTROL_MAX_MESSAGE_BYTES,
+      open(socket) {
+        if ("workspace" in socket.data) socket.data.workspace.socketHandlers.open(workspaceSocket(socket as ServerWebSocket<WorkspaceSocketData>));
+      },
       message(socket, message) {
+        if ("workspace" in socket.data) {
+          socket.data.workspace.socketHandlers.message(workspaceSocket(socket as ServerWebSocket<WorkspaceSocketData>), typeof message === "string" ? message : Buffer.from(message)); return;
+        }
         const raw = typeof message === "string" ? message : new Uint8Array(message);
         void socket.data.session.enqueue(raw).then((response) => {
           socket.send(JSON.stringify(response));
         });
       },
       close(socket) {
+        if ("workspace" in socket.data) { socket.data.workspace.socketHandlers.close(workspaceSocket(socket as ServerWebSocket<WorkspaceSocketData>)); return; }
         void socket.data.session.disconnect();
       },
     },
     fetch: async (req, server) => {
       const reqUrl = new URL(req.url);
+      if (reqUrl.pathname === "/workspace/relay") return liveWorkspace.upgrade(req, server.requestIP(req)?.address ?? "", data => server.upgrade(req, { data }));
+      if (reqUrl.pathname === "/workspace" || reqUrl.pathname.startsWith("/workspace/")) return liveWorkspace.handle(req, server.requestIP(req)?.address ?? "");
       if ((reqUrl.pathname === "/ui/api/scripts" || reqUrl.pathname.startsWith("/ui/api/scripts/"))
         && !isLoopbackAddress(server.requestIP(req)?.address)) {
         return Response.json({ ok: false, error: "loopback access only" }, { status: 403 });
@@ -389,5 +401,5 @@ export function serveDashboard(opts: DashboardServerOptions) {
   });
   void agentHub?.cleanupTemporaryProfiles();
   log(`dashboard + API on http://${hostname}:${server.port}  (UI at /, AliasMode Local API under /api; AdsPower-compatible)`);
-  return Object.assign(server, { stopScripts: () => scripts?.runner.shutdown() ?? Promise.resolve() });
+  return Object.assign(server, { stopScripts: async () => { await liveWorkspace.stop(); await scripts?.runner.shutdown(); } });
 }

@@ -1,0 +1,23 @@
+GameBrowser Firefox extension UI compatibility patch
+Patch ID: gamebrowser-firefox-extension-ui-v1
+
+The original and modified JugglerFrameChild.sys.mjs file is derived from:
+https://github.com/aliasmode/aliasmode-firefox
+Commit: 7eeccbdf0b2c7562dce9d11175c35667b9025a7f
+Source: additions/juggler/content/JugglerFrameChild.sys.mjs
+Installed module: omni.ja/modules/juggler/JugglerFrameChild.sys.mjs
+
+The original bytes were verified against both that source commit and the pinned
+AliasMode Firefox 156.0.1-beta.36 Windows runtime archive, SHA-256
+23d2531f5a72dbfde049319259bcee55407a2ba7afc570398446da5c1f20cfcb.
+
+The source remains under Mozilla Public License, version 2.0:
+https://mozilla.org/MPL/2.0/
+Complete original and modified source is included here, with a unified patch.
+The full upstream license from that commit is included in LICENSE-MPL-2.0.txt.
+
+Only the moz-extension document guard is replaced so the original Live workspace
+can inspect its installed extension UI through the existing Juggler actor.
+The native executable and all other archive entry bytes remain unchanged.
+The before/after module and archive hashes are recorded in APPLIED-PATCH.json
+inside the packaged Firefox resources. This patch does not change fingerprints.

@@ -82,6 +82,47 @@ test("invalid selections cannot configure the worker", () => {
   }
 });
 
+test("dispatch policy changes keep roles, discard the previous queue and never align an old URL", async () => {
+  const h = harness();
+  const policy = { origins: ["https://example.test"], pacing: "paced" as const, sensitiveControls: "manual" as const, pausedProfileIds: ["follower"] };
+  try {
+    await h.runtime.start("admin", ["follower"], true);
+    const first = h.children[0]!;
+    await h.runtime.configurePolicy(policy);
+    expect(first.exited).toBe(true);
+    expect(h.runtime.status()).toMatchObject({ active: true, adminId: "admin", followerIds: ["follower"], saved: true });
+    expect(h.children[1]!.input[0]).toMatchObject({ alignOnStart: false, policy });
+    h.setScope("different-account"); h.runtime.status();
+    await h.runtime.start("next-admin", ["next-follower"]);
+    expect(h.children.at(-1)!.input[0]).not.toHaveProperty("policy");
+  } finally { await h.runtime.stop(); }
+});
+
+test("suspending access during startup retains roles and late readiness cannot reactivate the worker", async () => {
+  const h = harness({ ready: false });
+  const start = h.runtime.start("admin", ["follower"], true).catch(() => undefined);
+  await tick();
+  const suspend = h.runtime.suspend("Cloud access is unavailable");
+  h.children[0]!.message({ type: "ready" });
+  await start; await suspend;
+  expect(h.runtime.status()).toMatchObject({ active: false, adminId: "admin", followerIds: ["follower"], saved: true, error: "Cloud access is unavailable" });
+  expect(h.children).toHaveLength(1);
+  await h.runtime.stop();
+});
+
+test("a queued save cannot clear the next account's saved plan", async () => {
+  const h = harness({ ready: false });
+  h.saved.set("other-account", { adminId: "other-admin", followerIds: ["other-follower"] });
+  const starting = h.runtime.start("admin", ["follower"], true).catch(() => undefined);
+  await tick();
+  const save = h.runtime.save(false).catch(error => error);
+  h.setScope("other-account"); h.runtime.status();
+  await starting;
+  expect(await save).toBeInstanceOf(BrowserSyncError);
+  expect(h.saved.get("other-account")).toEqual({ adminId: "other-admin", followerIds: ["other-follower"] });
+  await h.runtime.stop();
+});
+
 test("a changed Admin stops the old helper before connecting the new selection", async () => {
   const h = harness();
   try {

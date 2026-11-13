@@ -10,10 +10,10 @@ import type { Profile } from "./types.ts";
 const cleanup: Array<() => void> = [];
 afterEach(() => { for (const run of cleanup.splice(0).reverse()) run(); });
 
-function fixture() {
+function fixture(persistent = false) {
   const root = mkdtempSync(join(tmpdir(), "gamebrowser-resources-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const store = new ProfileStore(":memory:");
+  const store = new ProfileStore(persistent ? join(root, "profiles.sqlite") : ":memory:");
   cleanup.push(() => store.close());
   const profile: Profile = {
     id: "resources-one", accId: "", name: "Resources", group: "", username: "", password: "", twofa: "",
@@ -56,6 +56,119 @@ test("Chromium leaves existing runtime arguments alone until optimization is ena
   expect(args).toContain("--automation-launcher-pid=42");
   expect(args.filter((arg) => arg.startsWith("--fingerprint-"))).toEqual(defaults.filter((arg) => arg.startsWith("--fingerprint-")));
   expect(() => optimized.buildArgs(f.profile, 9333, f.root, ["--js-flags=--expose-gc"])).toThrow("unsafe launch_args rejected");
+});
+
+test("explicit workspace heaps remain scoped and yield to the current opt-in resource policy", () => {
+  const f = fixture();
+  let optimized = false;
+  const launcher = new Launcher({
+    ...f.options,
+    resourcePolicy: () => ({ ramBudgetMb: 512, autoOptimize: optimized }),
+  });
+  launcher.setWorkspaceHooks({
+    profileResourceLimits: (profile) => profile.id === f.profile.id ? { v8OldSpaceMb: 1024, deviceScaleFactor: 1 } : undefined,
+    profileExtensionDirs: (profile) => profile.id === f.profile.id ? [join(f.root, "managed-extension")] : undefined,
+  });
+  const flags = () => launcher.buildArgs(f.profile, 9333, f.root, ["--js-flags=--max-old-space-size=512"], undefined, true);
+  expect(flags().filter((flag) => flag.startsWith("--js-flags="))).toEqual(["--js-flags=--max-old-space-size=1024"]);
+  expect(flags()).toContain(`--load-extension=${join(f.root, "managed-extension")}`);
+  expect(flags()).not.toContain("--disable-blink-features=AutomationControlled");
+  optimized = true;
+  expect(flags().filter((flag) => flag.startsWith("--js-flags="))).toEqual(["--js-flags=--max-old-space-size=256"]);
+  const unrelated = { ...f.profile, id: "outside-workspace", fingerprintSeed: 124 };
+  f.store.upsertProfile(unrelated);
+  optimized = false;
+  const native = launcher.buildArgs(unrelated, 9334, f.root, [], undefined, true);
+  expect(native.some((flag) => flag.startsWith("--js-flags="))).toBe(false);
+  expect(native.some((flag) => flag.startsWith("--load-extension="))).toBe(false);
+});
+
+test("workspace network routing survives manager reattach and saved mode edits without replacing the browser", async () => {
+  const f = fixture();
+  const savedProxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "account", pass: "secret" };
+  f.store.upsertProfile({ ...f.profile, proxy: savedProxy });
+  let mode: "direct" | "system" = "direct";
+  let exitLookups = 0;
+  const options = { ...f.options, lookupExitLocation: async () => { exitLookups++; return null; } };
+  const hooks = { profileNetworkMode: () => mode };
+  const launcher = new Launcher(options);
+  launcher.setWorkspaceHooks(hooks);
+  const first = await launcher.start(f.profile.id, [], { headless: true });
+  expect(f.spawned[0]).toContain("--no-proxy-server");
+  expect(f.spawned[0]).toContain("--force-webrtc-ip-handling-policy=default_public_interface_only");
+  expect(f.store.getLaunch(f.profile.id)?.networkMode).toBe("direct");
+  mode = "system";
+  const restarted = new Launcher(options);
+  restarted.setWorkspaceHooks(hooks);
+  expect(await restarted.start(f.profile.id, [], { headless: true })).toEqual({ ...first, nativeSessionRestored: false, reattached: true });
+  expect(f.spawned).toHaveLength(1);
+  expect(f.store.getLaunch(f.profile.id)?.networkMode).toBe("direct");
+  expect(await restarted.certifiedActive(f.profile.id)).toBe(true);
+  expect(await restarted.stop(f.profile.id)).toBe(true);
+  await restarted.start(f.profile.id, [], { headless: true });
+  expect(f.store.getLaunch(f.profile.id)?.networkMode).toBe("system");
+  expect(f.spawned[1]).not.toContain("--no-proxy-server");
+  expect(f.spawned[1]?.some((flag) => flag.startsWith("--proxy-server="))).toBe(false);
+  expect(f.spawned[1]).toContain("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+  expect(f.store.getProfile(f.profile.id)?.proxy).toEqual(savedProxy);
+  expect(exitLookups).toBe(0);
+  await restarted.stop(f.profile.id);
+});
+
+test("managed extension context survives workspace recreation and a reopened store before hooks exist", async () => {
+  const f = fixture(true);
+  const original = join(f.root, "original-managed-extension");
+  const replacement = join(f.root, "next-managed-extension");
+  const paths = [original];
+  const options = { ...f.options, headless: true };
+  const first = new Launcher(options);
+  first.setWorkspaceHooks({ profileExtensionDirs: () => paths });
+  const opened = await first.start(f.profile.id);
+  const originalLaunch = f.store.getLaunch(f.profile.id)!;
+  expect(originalLaunch.managedExtensions).toEqual({ chromiumDirectories: [original], firefoxDirectories: [], firefoxAddonUUIDs: {} });
+  paths[0] = replacement;
+  const reopenedStore = new ProfileStore(join(f.root, "profiles.sqlite"));
+  cleanup.push(() => reopenedStore.close());
+  const restarted = new Launcher({ ...options, store: reopenedStore });
+  expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false, reattached: true });
+  expect(await restarted.certifiedActive(f.profile.id)).toBe(true);
+  restarted.setWorkspaceHooks({ profileExtensionDirs: () => paths });
+  expect((await restarted.start(f.profile.id)).reattached).toBe(true);
+  expect(f.spawned).toHaveLength(1);
+  expect(reopenedStore.getLaunch(f.profile.id)!.personaDigest).toBe(originalLaunch.personaDigest);
+  expect(await restarted.stop(f.profile.id)).toBe(true);
+  await restarted.start(f.profile.id);
+  expect(f.spawned).toHaveLength(2);
+  expect(f.spawned[1]).toContain(`--load-extension=${replacement}`);
+  expect(reopenedStore.getLaunch(f.profile.id)!.managedExtensions?.chromiumDirectories).toEqual([replacement]);
+  await restarted.stop(f.profile.id);
+});
+
+test("invalid managed addon context is rejected before native spawn or durable ownership", async () => {
+  const f = fixture();
+  const launcher = new Launcher(f.options);
+  launcher.setWorkspaceHooks({ profileExtensionDirs: () => ["invalid\0path"] });
+  await expect(launcher.start(f.profile.id)).rejects.toThrow("browser_launch/preflight");
+  expect(f.spawned).toHaveLength(0);
+  expect(f.store.getLaunch(f.profile.id)).toBeNull();
+});
+
+test("workspace force stop retains generation checks and exact native ownership", async () => {
+  const f = fixture();
+  let graceful = 0;
+  let killed = 0;
+  const launcher = new Launcher({ ...f.options,
+    browserClose: async () => { graceful++; return false; },
+    killPid: async (pid) => { killed++; await f.options.killPid!(pid); },
+  });
+  await launcher.start(f.profile.id);
+  const launch = f.store.getLaunch(f.profile.id)!;
+  expect(await launcher.forceStop(f.profile.id, { ...launch, startedAt: launch.startedAt + 1 })).toBe(false);
+  expect(killed).toBe(0);
+  expect(await launcher.forceStop(f.profile.id, launch)).toBe(true);
+  expect(graceful).toBe(0);
+  expect(killed).toBe(1);
+  expect(f.store.getLaunch(f.profile.id)).toBeNull();
 });
 
 test("concurrent bulk starts share automatic resources before launch reservations exist", async () => {

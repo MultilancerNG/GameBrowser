@@ -15,6 +15,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.21
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
@@ -35,6 +38,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: bun install --frozen-lockfile
       - name: Download and verify pinned upstream Firefox runtime
         shell: pwsh
@@ -97,13 +103,14 @@ jobs:
             -InstallerPath "artifacts/windows/GameBrowser_${version}_x64-offline-setup.exe" `
             -ChecksumsPath artifacts/windows/SHA256SUMS.txt `
             -ExpectedVersion $version `
-            -ReportPath artifacts/windows-smoke.json
+            -ReportPath artifacts/windows-smoke.json `
+            -RequireLiveWorkspace
       - name: Upload Windows smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gamebrowser-windows-smoke
-          path: artifacts/windows-smoke.json
+          path: artifacts/windows-smoke.*
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:

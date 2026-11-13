@@ -11,7 +11,8 @@ export interface FirefoxProcessIdentity {
   helperBinaryPaths?: readonly string[];
 }
 
-function commandArgs(line: string): string[] {
+/** Native Windows argument parsing, including an unclosed final quoted item. */
+export function parseProcessCommandArgs(line: string): string[] {
   const args: string[] = [];
   let value = "";
   let quoted = false;
@@ -64,7 +65,7 @@ export function matchFirefoxProcesses(
   const mainExecutable = executablePath(identity.binaryPath, windows);
   const helperExecutables = new Set(windows ? [] : (identity.helperBinaryPaths ?? []).map((path) => executablePath(path, false)));
   for (const record of snapshot.records) {
-    const args = record.argv ?? commandArgs(record.commandLine ?? "");
+    const args = record.argv ?? parseProcessCommandArgs(record.commandLine ?? "");
     const holdsProfile = args.some((arg, index) => arg === "-profile"
       && args[index + 1] !== undefined
       && profilePath(args[index + 1]!) === profilePath(identity.userDataDir));

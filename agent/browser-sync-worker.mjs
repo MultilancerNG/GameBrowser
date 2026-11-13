@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { chromium, firefox } from "playwright-core";
+import { sensitiveTargetPattern, sensitivePathPattern, sensitiveControl } from "./browser-sync-policy.mjs";
 
 // A connection must not change focus behaviour of the browsers it observes.
 globalThis[Symbol.for("aliasmode.playwrightFocusEmulation")] = false;
 
-const PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+// Standalone Node worker mirrors the central profile-id.ts grammar; a semantic
+// cross-test keeps its128-character and Windows-device-name rules identical.
+const PROFILE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+const RESERVED_PROFILE_ID = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const safeProfileId = (value) => typeof value === "string" && PROFILE_ID.test(value) && !RESERVED_PROFILE_ID.test(value);
 const MAX_VALUE = 65_536;
 const MAX_QUEUE = 128;
 const ACTION_TIMEOUT = 5_000;
@@ -14,7 +19,7 @@ const MODIFIERS = new Set(["Alt", "Control", "Meta", "Shift"]);
 
 export function validateSyncConfiguration(input) {
   const profile = (value) => {
-    if (!value || typeof value.id !== "string" || !PROFILE_ID.test(value.id) || !["chromium", "firefox"].includes(value.engine)
+    if (!value || !safeProfileId(value.id) || !["chromium", "firefox"].includes(value.engine)
       || typeof value.endpoint !== "string" || value.endpoint.length > 2_048) throw new Error("invalid sync configuration");
     const url = new URL(value.endpoint);
     if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)
@@ -30,7 +35,20 @@ export function validateSyncConfiguration(input) {
   const followers = input.followers.map(profile);
   if (new Set([admin.id, ...followers.map((item) => item.id)]).size !== followers.length + 1) throw new Error("duplicate sync profiles");
   if (new Set([admin.endpoint, ...followers.map((item) => item.endpoint)]).size !== followers.length + 1) throw new Error("duplicate sync endpoints");
-  return { type: "start", admin, followers, ...(input.alignOnStart === undefined ? {} : { alignOnStart: input.alignOnStart }) };
+  let policy;
+  if (input.policy !== undefined) {
+    const value = input.policy;
+    if (!value || !Array.isArray(value.origins) || value.origins.length > 32 || !["fast", "paced"].includes(value.pacing)
+      || value.sensitiveControls !== "manual" || (value.pausedProfileIds !== undefined && (!Array.isArray(value.pausedProfileIds) || value.pausedProfileIds.length > 256 || value.pausedProfileIds.some((id) => !safeProfileId(id))))) throw new Error("invalid sync policy");
+    const origins = [...new Set(value.origins.map((origin) => {
+      if (typeof origin !== "string" || origin.length > 2048) throw new Error("invalid sync origin");
+      const url = new URL(origin);
+      if (url.origin !== origin || url.username || url.password || (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)))) throw new Error("invalid sync origin");
+      return origin;
+    }))];
+    policy = { origins, pacing: value.pacing, sensitiveControls: "manual", pausedProfileIds: [...new Set(value.pausedProfileIds ?? [])] };
+  }
+  return { type: "start", admin, followers, ...(input.alignOnStart === undefined ? {} : { alignOnStart: input.alignOnStart }), ...(policy ? { policy } : {}) };
 }
 
 export function normalizeMirrorAction(value) {
@@ -80,11 +98,11 @@ export class FollowerQueue {
     try {
       while (!this.stopped && !this.failed && this.pending.length) {
         const action = this.pending.shift();
-        try { await this.apply(action); } catch {
+        try { await this.apply(action); } catch (error) {
           // Let the browser-disconnected notification settle before treating a
           // failed operation as uncertain replay. A closed browser can reconnect.
           if (this.disconnected) await new Promise((resolve) => setTimeout(resolve, 0));
-          this.fail(this.disconnected?.() ? "follower-disconnected" : "action-failed");
+          this.fail(this.disconnected?.() ? "follower-disconnected" : error?.reason === "policy-blocked" ? "policy-blocked" : "action-failed");
         }
       }
     } finally { this.running = false; }
@@ -92,7 +110,7 @@ export class FollowerQueue {
 }
 
 /** Executes only in a random Chromium isolated world, never the site's JS world. */
-export function installTrustedCapture(bindingName, cleanupName) {
+export function installTrustedCapture(bindingName, cleanupName, policy = null, sensitive = null) {
   if (globalThis[cleanupName]) globalThis[cleanupName]();
   const listeners = [];
   let scrollTimer;
@@ -100,9 +118,19 @@ export function installTrustedCapture(bindingName, cleanupName) {
   let lastEnterActivation = 0;
   let lastEnterTarget;
   const webPage = () => location.protocol === "http:" || location.protocol === "https:";
+  const pauseForPolicy = () => {
+    try { globalThis[bindingName](JSON.stringify({ type: "policy-pause", sourceUrl: location.href })); } catch { /* detached observer */ }
+  };
   const send = (action) => {
-    if (!webPage()) return;
+    if (!webPage() || policy?.paused) return;
+    if (policy && document.querySelector('iframe[src*="challenges.cloudflare.com"],iframe[src*="hcaptcha.com"],iframe[src*="recaptcha"],.cf-turnstile,.h-captcha,.g-recaptcha,[data-sitekey],input[autocomplete="one-time-code"],input[type="password"]')) { pauseForPolicy(); return; }
+    if (policy && (!policy.origins.includes(location.origin) || new RegExp(policy.sensitivePathSource, "i").test(location.pathname))) { pauseForPolicy(); return; }
     try { globalThis[bindingName](JSON.stringify({ ...action, sourceUrl: location.href })); } catch { /* detached observer */ }
+  };
+  const permittedTarget = (element) => {
+    if (policy?.paused) return false;
+    if (policy && sensitive?.(element, policy.sensitiveTargetSource)) { pauseForPolicy(); return false; }
+    return true;
   };
   const selectorFor = (element) => {
     if (!(element instanceof Element)) return "";
@@ -141,6 +169,7 @@ export function installTrustedCapture(bindingName, cleanupName) {
     if (event.detail === 0 && Date.now() - lastEnterActivation < 750) { lastEnterActivation = 0; return; }
     const element = target(event);
     if (!element || element.matches('input[type="checkbox"],input[type="radio"],select,option')) return;
+    if (!permittedTarget(element)) return;
     const rect = element.getBoundingClientRect();
     const scaleX = rect.width / (element.offsetWidth || rect.width || 1);
     const scaleY = rect.height / (element.offsetHeight || rect.height || 1);
@@ -156,14 +185,17 @@ export function installTrustedCapture(bindingName, cleanupName) {
     if (!event.isTrusted) return;
     const element = target(event);
     if (!element || element.matches('input[type="checkbox"],input[type="radio"],select,input[type="file"]')) return;
+    if (!permittedTarget(element)) return;
     const value = element.isContentEditable ? element.textContent : element.value;
     if (typeof value !== "string") return;
+    if (policy && value.length > 512) { pauseForPolicy(); return; }
     if (value.length > 65_536) { send({ type: "capture-error" }); return; }
     send({ type: "input", selector: selectorFor(element), value, keyHandled: element === lastEnterTarget && Date.now() - lastEnterActivation < 750 });
   });
   listen("change", (event) => {
     if (!event.isTrusted) return;
     const element = target(event);
+    if (!permittedTarget(element)) return;
     if (element instanceof HTMLSelectElement) send({ type: "select", selector: selectorFor(element), values: [...element.selectedOptions].map((option) => option.value) });
     else if (element instanceof HTMLInputElement && ["checkbox", "radio"].includes(element.type)) send({ type: "check", selector: selectorFor(element), checked: element.checked });
   });
@@ -172,6 +204,7 @@ export function installTrustedCapture(bindingName, cleanupName) {
     lastEnterActivation = 0;
     lastEnterTarget = undefined;
     const element = target(event);
+    if (!permittedTarget(element)) return;
     const editable = element?.isContentEditable || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
     // Select navigation is represented by its resulting change event. Sending
     // both the key and selectOption would run the follower's change handler twice.
@@ -221,13 +254,16 @@ async function frameAt(page, path) {
   return frame;
 }
 
-export async function applyMirrorAction(context, pages, action) {
+export async function applyMirrorAction(context, pages, action, policy) {
   let page = pages.get(action.pageId);
   if (!page || page.isClosed()) {
     page = context.pages()[action.pageId] ?? await context.newPage();
     pages.set(action.pageId, page);
   }
   if (action.type === "navigate") {
+    if (policy && isWebUrl(action.url) && (!policy.origins.includes(new URL(action.url).origin) || sensitivePathPattern.test(new URL(action.url).pathname))) {
+      const error = new Error("Synchronization requires independent manual control"); error.reason = "policy-blocked"; throw error;
+    }
     if (action.fragmentOnly) {
       if (!isWebUrl(action.url) || !isWebUrl(page.url())) throw new Error("follower workflow does not match the Admin");
       const source = new URL(action.url);
@@ -261,6 +297,12 @@ export async function applyMirrorAction(context, pages, action) {
   }
   if (!isWebUrl(frame.url()) || !matchingWorkflow(new URL(frame.url()))) throw new Error("follower workflow does not match the Admin");
   const locator = action.selector ? frame.locator(action.selector).first() : null;
+  if (policy) {
+    const originAllowed = policy.origins.includes(sourceUrl.origin) && !sensitivePathPattern.test(sourceUrl.pathname);
+    const pageSensitive = await frame.locator("html").evaluate(sensitiveControl, null);
+    const targetSensitive = locator && await locator.count() ? await locator.evaluate(sensitiveControl, sensitiveTargetPattern.source) : action.type !== "scroll";
+    if (!originAllowed || pageSensitive || targetSensitive || (action.type === "input" && action.value.length > 512)) { const error = new Error("Synchronization requires independent manual control"); error.reason = "policy-blocked"; throw error; }
+  }
   switch (action.type) {
     case "click": {
       const button = ["left", "middle", "right"][action.button];
@@ -323,6 +365,7 @@ export async function createMirrorSession(rawConfiguration, options = {}) {
   const queues = [];
   let stopped = false;
   let failed = false;
+  let failureReason;
   let closePromise;
   const close = () => closePromise ??= (async () => {
     stopped = true;
@@ -332,8 +375,9 @@ export async function createMirrorSession(rawConfiguration, options = {}) {
   })();
   const fail = (reason = "observer-unavailable") => {
     if (stopped || failed) return;
-    const safeReason = reason === "admin-disconnected" ? reason : "observer-unavailable";
-    failed = true; emit({ type: "failure", reason: safeReason, message: "Browser mirroring stopped because the Admin observer became unavailable" });
+    const safeReason = ["admin-disconnected", "policy-blocked"].includes(reason) ? reason : "observer-unavailable";
+    failureReason = safeReason;
+    failed = true; emit({ type: "failure", reason: safeReason, message: safeReason === "policy-blocked" ? "Synchronization paused for independent manual control on this page" : "Browser mirroring stopped because the Admin observer became unavailable" });
     void close();
   };
   try {
@@ -351,11 +395,25 @@ export async function createMirrorSession(rawConfiguration, options = {}) {
       const context = browser.contexts()[0];
       if (!context) throw new Error("follower context unavailable");
       const pages = new Map();
-      const queue = new FollowerQueue((action) => applyMirrorAction(context, pages, action), (reason) => emit({ type: "follower-error", profileId: follower.id, reason }), MAX_QUEUE, () => !browser.isConnected());
+      const queue = new FollowerQueue(async (action) => {
+        if (configuration.policy?.pacing === "paced") await new Promise((resolve) => setTimeout(resolve, 450 + Math.floor(Math.random() * 1301)));
+        if (!stopped) await applyMirrorAction(context, pages, action, configuration.policy);
+      }, (reason) => emit({ type: "follower-error", profileId: follower.id, reason }), MAX_QUEUE, () => !browser.isConnected());
       queues.push(queue);
       browser.on("disconnected", () => queue.fail("follower-disconnected"));
     }
-    const broadcast = (action) => { if (!stopped) for (const queue of queues) queue.enqueue(action); };
+    const broadcast = (action) => {
+      if (stopped || configuration.policy?.pausedProfileIds.includes(configuration.admin.id)) return;
+      if (configuration.policy) {
+        const value = action.type === "navigate" ? action.url : action.sourceUrl;
+        const url = isWebUrl(value) ? new URL(value) : null;
+        if (!url || !configuration.policy.origins.includes(url.origin) || sensitivePathPattern.test(url.pathname)) {
+          if (!action.initial) fail("policy-blocked");
+          return;
+        }
+      }
+      queues.forEach((queue, index) => { if (!configuration.policy?.pausedProfileIds.includes(configuration.followers[index].id)) queue.enqueue(action); });
+    };
     let nextPageId = 0;
     const attachPage = async (page, initial = false) => {
       if (stopped || claimedPages.has(page)) return;
@@ -365,7 +423,8 @@ export async function createMirrorSession(rawConfiguration, options = {}) {
       const worldName = `gamebrowser_sync_${token}`;
       const bindingName = `__gamebrowser_sync_${token}`;
       const cleanupName = `${bindingName}_cleanup`;
-      const source = `(${installTrustedCapture.toString()})(${JSON.stringify(bindingName)},${JSON.stringify(cleanupName)})`;
+      const capturePolicy = configuration.policy ? { origins: configuration.policy.origins, paused: configuration.policy.pausedProfileIds.includes(configuration.admin.id), sensitiveTargetSource: sensitiveTargetPattern.source, sensitivePathSource: sensitivePathPattern.source } : null;
+      const source = `(${installTrustedCapture.toString()})(${JSON.stringify(bindingName)},${JSON.stringify(cleanupName)},${JSON.stringify(capturePolicy)},${sensitiveControl.toString()})`;
       const session = await context.newCDPSession(page);
       const contexts = new Map();
       const framePaths = new Map();
@@ -390,6 +449,7 @@ export async function createMirrorSession(rawConfiguration, options = {}) {
         if (typeof payload !== "string" || payload.length > 150_000) { fail(); return; }
         try {
           const captured = JSON.parse(payload);
+          if (captured.type === "policy-pause" && configuration.policy) { fail("policy-blocked"); return; }
           const action = normalizeMirrorAction(captured);
           if (!isWebUrl(captured.sourceUrl)) { fail(); return; }
           const framePath = framePaths.get(contexts.get(executionContextId));
@@ -506,7 +566,9 @@ export async function createMirrorSession(rawConfiguration, options = {}) {
     return { close: async () => { context.off("page", onPage); admin.off("disconnected", onAdminDisconnected); await close(); } };
   } catch {
     await close();
-    throw new Error("Browser mirroring could not connect to all selected browsers");
+    const error = new Error("Browser mirroring could not connect to all selected browsers");
+    error.reason = failureReason ?? "connection-unavailable";
+    throw error;
   }
 }
 
@@ -534,7 +596,7 @@ export async function runWorker(input = process.stdin, output = process.stdout) 
         if (stopped) await session.close();
       });
       // Keep reading stop/EOF while the browsers connect.
-      starting.catch(() => { if (!stopped) { emit({ type: "failure", reason: "connection-unavailable", message: "Browser mirroring could not connect to all selected browsers" }); lines.close(); } });
+      starting.catch((error) => { if (!stopped) { emit({ type: "failure", reason: error?.reason === "policy-blocked" ? "policy-blocked" : "connection-unavailable", message: "Browser mirroring could not connect to all selected browsers" }); lines.close(); } });
     }
   } catch {
     if (!stopped) emit({ type: "failure", reason: "invalid-command", message: "Browser mirroring received an invalid command" });

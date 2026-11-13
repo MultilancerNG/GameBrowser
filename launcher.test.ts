@@ -4092,7 +4092,30 @@ test("Linux proc stat parsing handles spaces and parentheses in process names", 
     parentPid: 1,
     processGroupId: 123,
     startTime: "987654",
+    linuxState: "S",
   });
+  for (const state of ["Z", "X"]) expect(parseLinuxProcStat(`123 (browser) ${[state, ...fields.slice(1)].join(" ")}`)?.linuxState).toBe(state);
+});
+
+test("Linux close ignores confirmed zombie/dead group remnants and retains live or uncertain ownership", async () => {
+  for (const sample of [{ state: "Z", incomplete: false, stopped: true }, { state: "X", incomplete: false, stopped: true },
+    { state: "S", incomplete: false, stopped: false }, { state: undefined, incomplete: false, stopped: false },
+    { state: "Z", incomplete: true, stopped: false }]) {
+    const store = seeded();
+    store.recordLaunch({ profileId: "k1d0cd11", pid: 7190, debugPort: 9333, ws: "ws://127.0.0.1:9333/closed", startedAt: 1,
+      binaryPath: "/fake/cloak", userDataDir: "/tmp/linux-dead-remnants/k1d0cd11", processGroupId: 7190, rootStartTime: "90" });
+    let signals = 0;
+    const launcher = new Launcher({ store, binaryPath: "/fake/cloak", hostPlatform: "linux",
+      fetch: async () => ({ ok: false, json: async () => ({}) }), findOwnedBrowserPids: async () => [], isPidAlive: () => false,
+      readProcessSnapshot: async () => ({ incomplete: sample.incomplete, records: [
+        { pid: 7191, executablePath: null, parentPid: 1, processGroupId: 7190, startTime: "91", linuxState: sample.state },
+      ] }), killPid: async () => { signals++; }, killProcessGroup: async () => { signals++; }, teardownTimeoutMs: 0,
+    });
+    expect(await launcher.stop("k1d0cd11")).toBe(sample.stopped);
+    expect(store.getLaunch("k1d0cd11") === null).toBe(sample.stopped);
+    expect(signals).toBe(0);
+    store.close();
+  }
 });
 
 test("Linux default spawn creates a dedicated process group and captures exact root start time", async () => {
@@ -4950,16 +4973,18 @@ test("a healthy CDP endpoint still wins over a late spawn-failure report", async
 });
 
 test("matchProfileDirHolderPids finds a leaked browser on the same profile dir but ANY debug port", () => {
-  const dir = "C:\aliasmode\profiles\dho7ab90";
+  const dir = String.raw`C:\aliasmode\profiles\dho7ab90`;
+  const binary = String.raw`C:\cb\chrome.exe`;
+  const otherDir = String.raw`C:\aliasmode\profiles\other`;
   const snapshot = {
     incomplete: false,
     records: [
       // The leak: same persistent dir, a debug port from an earlier launch. The
       // owned-pid scan misses this because it also matches the RECORDED port.
-      { pid: 4242, executablePath: "C:\cb\chrome.exe", commandLine: `"C:\cb\chrome.exe" --remote-debugging-port=9401 --user-data-dir=${dir}` },
+      { pid: 4242, executablePath: binary, commandLine: `"${binary}" --remote-debugging-port=9401 --user-data-dir=${dir}` },
       // A different profile whose dir merely shares a prefix must never match.
-      { pid: 4243, executablePath: "C:\cb\chrome.exe", commandLine: `"C:\cb\chrome.exe" --remote-debugging-port=9402 --user-data-dir=${dir}2` },
-      { pid: 4244, executablePath: "C:\cb\chrome.exe", commandLine: `"C:\cb\chrome.exe" --remote-debugging-port=9403 --user-data-dir=C:\aliasmode\profiles\other` },
+      { pid: 4243, executablePath: binary, commandLine: `"${binary}" --remote-debugging-port=9402 --user-data-dir=${dir}2` },
+      { pid: 4244, executablePath: binary, commandLine: `"${binary}" --remote-debugging-port=9403 --user-data-dir=${otherDir}` },
     ],
   };
   expect(matchProfileDirHolderPids(dir, snapshot)).toEqual([4242]);

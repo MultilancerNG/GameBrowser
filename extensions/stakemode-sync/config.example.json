@@ -1,0 +1,7 @@
+{
+  "profileId": "GENERATED_BY_STAKEMODE",
+  "token": "GENERATED_PER_PROFILE_AT_LAUNCH",
+  "role": "manual",
+  "origins": ["https://stake.com"],
+  "relayUrl": "ws://127.0.0.1:8080/relay"
+}

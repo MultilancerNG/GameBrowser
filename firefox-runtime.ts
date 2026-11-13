@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   PLAYWRIGHT_MAX_MESSAGE_BYTES,
@@ -37,6 +37,9 @@ export interface StartFirefoxOwnerInput {
   /** Preferences the engine applies at startup (CAMOU_PREFS_n). */
   prefs?: Record<string, JsonValue>;
   proxy?: { server: string; username?: string; password?: string; bypass?: string };
+  networkMode?: "direct" | "system" | "proxy";
+  addonDirs?: string[];
+  addonUUIDs?: Record<string, string>;
   headless?: boolean;
   args?: string[];
   timeoutMs?: number;
@@ -213,6 +216,14 @@ function readReady(child: ChildProcess, timeoutMs?: number): Promise<FirefoxOwne
   });
 }
 
+function validAddonUUIDs(value: unknown): value is Record<string, string> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).length <= 256
+    && Object.entries(value).every(([id, uuid]) => id.length >= 1 && id.length <= 200
+      && /^[a-zA-Z0-9@._{}-]+$/.test(id) && !["__proto__", "prototype", "constructor"].includes(id)
+      && typeof uuid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid));
+}
+
 export async function startFirefoxOwner(
   input: StartFirefoxOwnerInput,
   callbacks: FirefoxOwnerCallbacks = {},
@@ -223,6 +234,12 @@ export async function startFirefoxOwner(
     || typeof input.userDataDir !== "string" || !input.userDataDir
     || !input.config || typeof input.config !== "object" || Array.isArray(input.config)
     || (input.prefs !== undefined && (!input.prefs || typeof input.prefs !== "object" || Array.isArray(input.prefs)))
+    || (input.networkMode !== undefined && !["direct", "system", "proxy"].includes(input.networkMode))
+    || ((input.networkMode === "direct" || input.networkMode === "system") && input.proxy !== undefined)
+    || (input.networkMode === "proxy" && !input.proxy)
+    || (input.addonDirs !== undefined && (!Array.isArray(input.addonDirs) || input.addonDirs.length > 32
+      || input.addonDirs.some((path) => typeof path !== "string" || !isAbsolute(path) || path.includes("\0"))))
+    || (input.addonUUIDs !== undefined && !validAddonUUIDs(input.addonUUIDs))
     || (input.timeoutMs !== undefined && (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1))) {
     throw new FirefoxOwnerError("invalid_request", "Firefox owner input is invalid");
   }

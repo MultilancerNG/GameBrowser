@@ -23,9 +23,15 @@ The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to
 
 Engine names, internal executable names (`aliasmode-sidecar`, `aliasmode-mcp`), protocol names and environment variables are retained for runtime compatibility. The desktop executable is `gamebrowser.exe`; the application, installer product and landing page are branded GameBrowser. Windows agent discovery uses the separate `ng.solomon.gamebrowser` data directory.
 
-## Profile workspace
+## Live workspace and profiles
 
-Beta 78 uses the AliasMode-derived profile-list dashboard. The original StakeMode preview's Live workspace grid, Admin/Follower board and Full Admin View are not included in this build; their restoration is tracked in `FEATURE_CHECKLIST.md`. Browser following in beta 78 uses the profile-list controls described below and does not require a Cloud account in Local mode.
+The beta 79 source restores the original StakeMode Live workspace inside GameBrowser, with the current Cloud and MCP application retained. Beta 78 is the previous published installer and does not contain this workspace. The new installer is published only after the Windows release gate passes.
+
+Choose **GameBrowser Local** to run without an account, or use the compatible Cloud sign-in. A mode change can require an app restart. Once setup is ready, Live workspace opens by default. Use **Profiles** for the existing profile list and Cloud management, and **Settings & Cloud** for Team invitations, account/device settings and MCP. The Live workspace displays controllable Cloud profiles with current edit access; view-only entries remain available in Profiles.
+
+The grid shows real browser frames. **Full view** opens one profile with independent tabs, an address bar, navigation, bookmarks and fullscreen. **Full Admin View** expands the controlling profile; selecting another tile changes the view without changing assignments. Followers require explicit manual takeover before independent browser input. Configure the workspace's approved website origins and Fast/Paced dispatch; sensitive interactions remain manual in this workspace.
+
+Live workspace also restores profile groups, tags, notes, bookmarks, fresh-identity configuration copies, a CPU/RAM task manager, Direct/System/Proxy routes, local Chromium extensions and Firefox add-ons, and bounded local workflows/schedules. **Move selected to Trash** uses the existing recoverable bulk-delete path. A separately labelled permanent local delete retains its explicit confirmation. The complete requested-feature status is in [FEATURE_CHECKLIST.md](FEATURE_CHECKLIST.md), and architecture/provenance details are in [docs/LIVE-WORKSPACE-INTEGRATION.md](docs/LIVE-WORKSPACE-INTEGRATION.md).
 
 Drag a profile’s handle to arrange profiles, or focus the handle and use Arrow Up / Arrow Down. Manual order is saved in the local database across application restarts, separately for Local mode and each signed-in Cloud account. It is a device preference, not a Cloud-synchronized workspace setting. Column sorting is still available; **Saved order** restores the manual layout.
 
@@ -39,15 +45,15 @@ Saved sync groups contain only profile IDs and are isolated between Local mode a
 
 ## Import and export
 
-Use **Import profiles** in the sidebar to upload supported TXT, CSV, JSON or XLSX exports, or paste a supported account export. Choose the destination group before importing. Imports preserve the supplied identity and session data; unsupported encrypted provider archives need a readable export first.
+Use **Import** in Live workspace or **Import profiles** in the Profiles sidebar to upload supported TXT, CSV, JSON or XLSX exports, or paste a supported account export. Choose the destination group before importing. Imports preserve the supplied identity and session data; unsupported encrypted provider archives need a readable export first.
 
-Use **Export profiles** in the sidebar for selected profiles or the current filtered view. A profile’s edit dialog also offers **Export saved profile**. TXT and XLSX carry the supported saved identity/cookie fields; CSV exports account credentials. These readable exports are not full browser-directory backups. Exporting does not change the selection or following assignments. Cloud exports require edit access to every profile. Device-only resource preferences and saved following groups are not part of portable exports.
+Use **Export** in Live workspace or **Export profiles** in the Profiles sidebar for selected profiles or the current filtered view. A profile’s edit dialog also offers **Export saved profile**. TXT and XLSX carry the supported saved identity/cookie fields; CSV exports account credentials. These readable exports are not full browser-directory backups. Exporting does not change the selection or following assignments. Cloud exports require edit access to every profile. Device-only resource preferences and saved following groups are not part of portable exports.
 
 ## Browser resource settings
 
-Open an existing profile’s edit dialog to set **RAM budget, MB**, **Auto optimize**, and **Always show bookmarks bar**. Auto calculates a target from this device’s memory and the number of running profiles; manual targets accept 128–32768 MB. Optimization is opt-in and adjusts Chromium renderer heaps and caches, or Firefox’s memory cache. It is a soft target, not a total browser-process RAM limit or a reservation of physical memory. A renderer heap limit can be visible to websites.
+Open a profile’s **Settings** in Live workspace, or its edit dialog in Profiles, to set **RAM budget, MB**, **Auto optimize**, and **Always show bookmarks bar**. Auto calculates a target from this device’s memory and the number of running profiles; manual targets accept 128–32768 MB. Optimization is opt-in and adjusts Chromium renderer heaps and caches, or Firefox’s memory cache. It is a soft target, not a total browser-process RAM limit or a reservation of physical memory. A renderer heap limit can be visible to websites.
 
-Settings are stored on this device and apply on the next fresh browser launch. Saving them leaves running browsers and following groups intact. The bookmarks option can retain the current behavior or explicitly choose an always-visible bar; existing bookmarks are preserved.
+Settings are stored on this device and apply on the next fresh browser launch. Saving them leaves running browsers and following groups intact. The bookmarks option can retain the current behavior or explicitly choose an always-visible bar; existing native bookmarks are preserved. Live workspace renders its own saved profile-bookmark bar because headless browser frames do not include native browser chrome.
 
 ## Windows development
 
@@ -64,7 +70,7 @@ The dashboard and Local API bind to loopback. Choose Local on first use to run w
 
 ## Build Windows installers
 
-Run **Actions → GameBrowser Windows → Run workflow**. It downloads the pinned upstream Firefox archive, verifies its published SHA-256, prepares the sidecar with verified baseline Bun, and builds full and slim NSIS installers with a checksum file. The release workflow gates publication on a fresh Windows install/start/Local-mode/MCP/shutdown/uninstall smoke check. The full installer bundles WebView2; the slim installer downloads it when required. The upstream engine archive must remain publicly available.
+Run **Actions → GameBrowser Windows → Run workflow**. It downloads the pinned upstream Firefox archive, verifies its published SHA-256, prepares the sidecar with verified baseline Bun, and builds full and slim NSIS installers with a checksum file. The release workflow gates publication on a fresh Windows install/start/Local-mode/MCP/shutdown/uninstall smoke check and the rendered installed Live workspace with a real bundled Firefox profile, live frames, input, tabs and navigation. The full installer bundles WebView2; the slim installer downloads it when required. The upstream engine archive must remain publicly available.
 
 The artifact is `gamebrowser-windows-x64`. For a prerelease, push a `v` tag matching the version in `src-tauri/tauri.conf.json` after checking the build. Tag builds publish installers and `SHA256SUMS.txt` to this repository's Releases. Installers are currently unsigned; Windows may show an unknown publisher prompt. Test installation, profile launch, update and uninstall on Windows before a public stable release.
 

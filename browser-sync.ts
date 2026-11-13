@@ -5,6 +5,12 @@ import { isSafeProfileId } from "./profile-id.ts";
 import { playwrightWorkerEnvironment, resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 
 export interface BrowserSyncPlan { adminId: string; followerIds: string[] }
+export interface BrowserSyncPolicy {
+  origins: string[];
+  pacing: "fast" | "paced";
+  sensitiveControls: "manual";
+  pausedProfileIds?: string[];
+}
 
 export interface BrowserSyncState {
   active: boolean;
@@ -60,6 +66,9 @@ export interface BrowserSyncLifecycle {
   stop(): Promise<BrowserSyncState>;
   resume(): Promise<BrowserSyncState>;
   save(saveSession: boolean): Promise<BrowserSyncState>;
+  configurePolicy?(policy: BrowserSyncPolicy | undefined, reconnect?: boolean): Promise<BrowserSyncState>;
+  currentPolicy?(): BrowserSyncPolicy | undefined;
+  suspend?(message: string): Promise<BrowserSyncState>;
 }
 
 export class BrowserSyncError extends Error {
@@ -110,8 +119,41 @@ export class BrowserSyncRuntime implements BrowserSyncLifecycle {
   private requestGeneration = 0;
   private operation: Promise<unknown> = Promise.resolve();
   private error: string | null = null;
+  private policy?: BrowserSyncPolicy;
+  private policyScope?: string;
 
   constructor(private readonly options: BrowserSyncOptions) {}
+
+  currentPolicy(): BrowserSyncPolicy | undefined { return this.policy && this.policyScope === this.currentScope() ? structuredClone(this.policy) : undefined; }
+
+  configurePolicy(policy: BrowserSyncPolicy | undefined, reconnect = true): Promise<BrowserSyncState> {
+    const scope = this.currentScope();
+    if (!scope) throw new BrowserSyncError("Sign in before changing dispatch settings", 401);
+    if (policy) {
+      if (!Array.isArray(policy.origins) || policy.origins.length > 32 || !["fast", "paced"].includes(policy.pacing)
+        || policy.sensitiveControls !== "manual" || policy.pausedProfileIds?.some(id => !isSafeProfileId(id))) throw new BrowserSyncError("Workspace dispatch settings are invalid");
+      for (const origin of policy.origins) {
+        let url: URL; try { url = new URL(origin); } catch { throw new BrowserSyncError("Use exact website origins"); }
+        if (url.origin !== origin || url.username || url.password || url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))) throw new BrowserSyncError("Use exact HTTPS website origins");
+      }
+    }
+    const next = policy ? structuredClone(policy) : undefined;
+    if (this.policyScope === scope && JSON.stringify(next) === JSON.stringify(this.policy)) return Promise.resolve(this.status());
+    this.policy = next; this.policyScope = scope;
+    const generation = ++this.requestGeneration;
+    this.cancelSession(this.session);
+    return this.enqueue(async () => {
+      this.assertCurrent(generation, scope);
+      if (this.session) await this.close(this.session);
+      const plan = this.desired;
+      if (!plan || generation !== this.requestGeneration || plan.state === "attention") return this.status();
+      this.assertPlan(plan, generation);
+      if (!reconnect) { plan.state = "attention"; this.error = "Apply the configured group to use the changed dispatch settings"; return this.status(); }
+      plan.state = "connecting";
+      // New policy applies only to future actions; no previous URL/action is replayed.
+      return this.connect(plan, generation, false);
+    });
+  }
 
   status(): BrowserSyncState {
     this.checkBoundary();
@@ -165,16 +207,25 @@ export class BrowserSyncRuntime implements BrowserSyncLifecycle {
   }
 
   save(saveSession: boolean): Promise<BrowserSyncState> {
+    const scope = this.currentScope(), generation = this.requestGeneration;
+    if (!scope) throw new BrowserSyncError("Sign in before saving a Cloud mirroring session", 401);
     return this.enqueue(async () => {
       this.checkBoundary();
-      const scope = this.currentScope();
-      if (!scope) throw new BrowserSyncError("Sign in before saving a Cloud mirroring session", 401);
+      this.assertCurrent(generation, scope);
       if (!this.options.savePlan) throw new BrowserSyncError("Saved mirroring sessions are unavailable", 503);
       const plan = this.desired;
       if (saveSession && !plan) throw new BrowserSyncError("Configure a mirroring group before saving it");
       this.options.savePlan(scope, saveSession && plan ? { adminId: plan.adminId, followerIds: [...plan.followerIds] } : null);
       return this.status();
     });
+  }
+
+  /** Access uncertainty stops actions while retaining the explicit role assignment. */
+  suspend(message: string): Promise<BrowserSyncState> {
+    ++this.requestGeneration;
+    const plan = this.desired;
+    if (plan) this.attention(plan, message);
+    return this.enqueue(async () => { if (this.session) await this.close(this.session); return this.status(); });
   }
 
   stop(): Promise<BrowserSyncState> {
@@ -221,6 +272,7 @@ export class BrowserSyncRuntime implements BrowserSyncLifecycle {
         type: "start", admin: this.wireTarget(targets[0]!), followers: targets.slice(1).map((target) => this.wireTarget(target)),
         // Reopening a browser never replays a previous URL or queued action.
         alignOnStart: explicit,
+        ...(this.currentPolicy() ? { policy: this.currentPolicy() } : {}),
       })}\n`);
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {

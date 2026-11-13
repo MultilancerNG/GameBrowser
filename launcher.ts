@@ -10,12 +10,13 @@
  * persistent browser state without replacing cookies changed by the browser.
  */
 
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep, win32 } from "node:path";
 import {
   closeSync,
   copyFileSync,
   createReadStream,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   rmSync,
@@ -32,9 +33,11 @@ import {
 import { lstat, readdir, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dlopen, ptr } from "bun:ffi";
-import type { CookieRecord, LaunchInfo, LaunchPersona, Profile, ProxySpec } from "./types.ts";
+import type { CookieRecord, LaunchInfo, LaunchManagedExtensions, LaunchPersona, Profile, ProxySpec } from "./types.ts";
+import { normalizeLaunchManagedExtensions } from "./launch-managed-extensions.ts";
 import { cookiesForEngine } from "./parse.ts";
 import type { ProfileStore } from "./store.ts";
+import { effectiveProfileProxy, normalizeNetworkMode, type NetworkMode } from "./workspace/networkPolicy.ts";
 import {
   DEFAULT_PROFILE_RESOURCE_POLICY, resolveProfileResources, resourceMemorySnapshot,
   type ProfileResourcePolicy, type ResourceMemorySnapshot,
@@ -58,7 +61,7 @@ import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
 import { applySessionToEndpoint, bundleTabUrls, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError, telegramHomeClient } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, FirefoxOwnerError, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
-import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
+import { matchFirefoxProcesses, parseProcessCommandArgs } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxPersonaOs, firefoxStartupPrefs, intelMacGraphicsVendor,
@@ -526,6 +529,13 @@ export interface LauncherOptions {
   resourcePolicy?: (profileId: string) => ProfileResourcePolicy;
   /** Injectable host memory sample. activeProfiles excludes the browser about to launch. */
   memorySnapshot?: (activeProfiles: number) => ResourceMemorySnapshot;
+  /** Trusted workspace-only heap target; absent for profiles outside that workspace. */
+  profileResourceLimits?: (profile: Profile) => BrowserResourceLimits | undefined;
+  /** Select the route without changing the profile's saved proxy credentials. */
+  profileNetworkMode?: (profile: Profile) => NetworkMode | undefined;
+  profileExtensionDirs?: (profile: Profile) => string[] | undefined;
+  profileFirefoxAddonDirs?: (profile: Profile) => string[] | undefined;
+  profileFirefoxAddonUUIDs?: (profile: Profile) => Record<string, string> | undefined;
   autofill?: AutofillBridge;
   /** Path to the CloakBrowser binary. Defaults to $CLOAKBROWSER_BINARY_PATH. */
   binaryPath?: string;
@@ -689,7 +699,20 @@ export interface LaunchStartOptions extends BrowserOpenOptions {
   sessionBaseVersion?: number;
   /** Keep the browser running after its last window closes, so the Cloud coordinator can save and stop it. */
   keepAliveWithoutWindows?: boolean;
+  resourceLimits?: BrowserResourceLimits;
+  networkMode?: NetworkMode;
 }
+
+export interface BrowserResourceLimits { v8OldSpaceMb: number; deviceScaleFactor: 1; }
+export function validateBrowserResourceLimits(value: BrowserResourceLimits): BrowserResourceLimits {
+  if (!value || !Number.isInteger(value.v8OldSpaceMb) || value.v8OldSpaceMb < 128 || value.v8OldSpaceMb > 16384 || value.deviceScaleFactor !== 1) {
+    throw new Error("Invalid browser resource policy");
+  }
+  return { v8OldSpaceMb: value.v8OldSpaceMb, deviceScaleFactor: 1 };
+}
+
+export type WorkspaceLauncherHooks = Pick<LauncherOptions,
+  "profileResourceLimits" | "profileNetworkMode" | "profileExtensionDirs" | "profileFirefoxAddonDirs" | "profileFirefoxAddonUUIDs">;
 
 export interface LaunchStartResult {
   ws: string;
@@ -742,6 +765,8 @@ export interface HostProcessRecord {
   parentPid?: number;
   processGroupId?: number;
   startTime?: string;
+  /** Linux /proc state; only confirmed Z/X states prove the process has exited. */
+  linuxState?: string;
   /** False only when executablePath was heuristically split from flattened argv. */
   executablePathExact?: boolean;
   commandLine?: string;
@@ -911,6 +936,12 @@ export class Launcher {
   private store: ProfileStore;
   private resourcePolicy?: LauncherOptions["resourcePolicy"];
   private memorySnapshot: NonNullable<LauncherOptions["memorySnapshot"]>;
+  private workspaceHooks: WorkspaceLauncherHooks;
+  private resourceLimits = new Map<string, BrowserResourceLimits>();
+  private networkModes = new Map<string, NetworkMode>();
+  private frozenNetworkModes = new Map<string, NetworkMode | undefined>();
+  private frozenManagedExtensions = new Map<string, LaunchManagedExtensions>();
+  private profileMutations = new Set<string>();
   private autofill?: AutofillBridge;
   private dpapiKeysReadable: (keys: string[]) => Promise<boolean[] | null>;
   /** DPAPI answers per encrypted cookie key, so reopening a profile does not respawn PowerShell. */
@@ -1027,6 +1058,11 @@ export class Launcher {
     this.store = opts.store;
     this.resourcePolicy = opts.resourcePolicy;
     this.memorySnapshot = opts.memorySnapshot ?? resourceMemorySnapshot;
+    this.workspaceHooks = {
+      profileResourceLimits: opts.profileResourceLimits, profileNetworkMode: opts.profileNetworkMode,
+      profileExtensionDirs: opts.profileExtensionDirs, profileFirefoxAddonDirs: opts.profileFirefoxAddonDirs,
+      profileFirefoxAddonUUIDs: opts.profileFirefoxAddonUUIDs,
+    };
     this.dpapiKeysReadable = opts.dpapiKeysReadable ?? ((keys) => dpapiKeysReadable(keys, 15_000));
     this.autofill = opts.autofill;
     this.binaryPath = opts.binaryPath ?? defaultBinaryPath();
@@ -1128,6 +1164,56 @@ export class Launcher {
       throw new Error(`profile user-data directory escapes configured root for id ${JSON.stringify(profileId)}`);
     }
     return dir;
+  }
+
+  /** Install trusted, membership-scoped hooks after the workspace service is constructed. */
+  setWorkspaceHooks(hooks: WorkspaceLauncherHooks): void {
+    this.workspaceHooks = { ...hooks };
+  }
+
+  /** Desktop workspace viewports use the saved persona's CSS-pixel screen. */
+  desktopViewport(profileId: string): { width: number; height: number } {
+    const stored = this.store.getProfile(profileId);
+    if (!stored) throw new Error("profile not found");
+    const screen = this.pageScreen(launchedProfile(stored, this.store.getLaunch(profileId)));
+    return { width: screen.screenWidth, height: screen.screenHeight };
+  }
+
+  private selectedNetworkMode(profile: Profile): NetworkMode | undefined {
+    const mode = this.workspaceHooks.profileNetworkMode?.(profile) ?? this.networkModes.get(profile.id);
+    return mode === undefined ? undefined : normalizeNetworkMode(mode);
+  }
+
+  private networkModeFor(profile: Profile): NetworkMode | undefined {
+    // Existing generations keep their actual route even if a saved workspace setting changes.
+    const launch = this.store.getLaunch(profile.id);
+    if (launch) return launch.networkMode;
+    return this.frozenNetworkModes.has(profile.id) ? this.frozenNetworkModes.get(profile.id) : this.selectedNetworkMode(profile);
+  }
+
+  private networkProfile(profile: Profile): Profile {
+    const mode = this.networkModeFor(profile);
+    return mode === undefined ? profile : { ...profile, proxy: effectiveProfileProxy(profile, mode) };
+  }
+
+  private selectedManagedExtensions(profile: Profile): LaunchManagedExtensions {
+    return normalizeLaunchManagedExtensions({
+      chromiumDirectories: this.workspaceHooks.profileExtensionDirs?.(profile) ?? [],
+      firefoxDirectories: profile.engine === "firefox" ? this.workspaceHooks.profileFirefoxAddonDirs?.(profile) ?? [] : [],
+      firefoxAddonUUIDs: profile.engine === "firefox" ? this.workspaceHooks.profileFirefoxAddonUUIDs?.(profile) ?? {} : {},
+    });
+  }
+
+  private managedExtensionsFor(profile: Profile): LaunchManagedExtensions {
+    const launch = this.store.getLaunch(profile.id);
+    // A legacy generation without managed context keeps its original native
+    // identity. New callbacks cannot attach addons to an already running browser.
+    if (launch) return launch.managedExtensions ?? { chromiumDirectories: [], firefoxDirectories: [], firefoxAddonUUIDs: {} };
+    return this.frozenManagedExtensions.get(profile.id) ?? this.selectedManagedExtensions(profile);
+  }
+
+  private networkWebRtcPolicy(profile: Profile): string {
+    return this.networkModeFor(profile) === "system" ? "disable_non_proxied_udp" : webRtcPolicy(this.networkProfile(profile));
   }
 
   /** Free bytes on the drive that holds profile data; null when it cannot be read. */
@@ -1341,6 +1427,11 @@ export class Launcher {
       id,
       loadDir: this.store.getExtension(id)?.loadDir ?? null,
     }));
+    const networkMode = this.networkModeFor(profile);
+    const managed = this.managedExtensionsFor(profile);
+    const managedExtensions = managed.chromiumDirectories;
+    const managedFirefoxAddons = managed.firefoxDirectories;
+    const managedFirefoxAddonUUIDs = Object.entries(managed.firefoxAddonUUIDs).sort(([a], [b]) => a.localeCompare(b));
     const serialized = JSON.stringify({
       schema: 2,
       ...(profile.engine === "firefox" ? { engine: "firefox", firefox: profile.firefox } : {}),
@@ -1351,7 +1442,8 @@ export class Launcher {
       ua: profile.ua,
       platform: profile.platform,
       proxy: profile.proxy,
-      ...(profile.proxy ? { proxyWebRtcPolicy: webRtcPolicy(profile) } : { webRtcPolicy: webRtcPolicy(profile) }),
+      ...(networkMode ? { networkMode } : {}),
+      ...(profile.proxy ? { proxyWebRtcPolicy: this.networkWebRtcPolicy(profile) } : { webRtcPolicy: this.networkWebRtcPolicy(profile) }),
       timezone: profile.timezone,
       ...(profile.locale ? { locale: profile.locale } : {}),
       screen: [profile.screenWidth, profile.screenHeight],
@@ -1361,6 +1453,9 @@ export class Launcher {
       // Only when present, so the digest of a profile without stored hardware does not change.
       ...(profile.hardware ? { hardware: profile.hardware } : {}),
       extensions,
+      ...(managedExtensions.length ? { managedExtensions } : {}),
+      ...(managedFirefoxAddons.length ? { managedFirefoxAddons } : {}),
+      ...(managedFirefoxAddonUUIDs.length ? { managedFirefoxAddonUUIDs } : {}),
       ...(autofill ? { autofill: AUTOFILL_EXTENSION_REVISION } : {}),
     });
     return createHash("sha256").update(serialized).digest("hex");
@@ -1433,7 +1528,7 @@ export class Launcher {
    * address. Without an answer WebRTC stays as before: on the proxy, with no public address.
    */
   private webRtcExitIp(profile: Profile, exit: ExitLocation | null): string | undefined {
-    if (!profile.proxy || !this.lookupExitLocationFn) return undefined;
+    if (!this.networkProfile(profile).proxy || !this.lookupExitLocationFn) return undefined;
     const ip = exit?.ip;
     this.log(ip ? `${profile.id}: proxy exit IP found for WebRTC` : `${profile.id}: proxy exit IP not found; WebRTC keeps no public address`);
     return ip;
@@ -1517,13 +1612,16 @@ export class Launcher {
     // on a 125% or 150% display and they look blurry. A build without the host-scale patch
     // still draws at the profile's 100%, so it gets 1.
     if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push(`--force-device-scale-factor=${this.deviceScale(profile)}`);
+    if (headless && this.deviceScale(profile) === 1 &&
+      (this.workspaceHooks.profileResourceLimits?.(profile) ?? this.resourceLimits.get(profile.id)) &&
+      !args.some((arg) => arg.startsWith("--force-device-scale-factor="))) args.push("--force-device-scale-factor=1");
     // The engine shows the label in the native window title and leaves page titles alone.
     if (this.nativeWindowLabel(profile)) {
       const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profile.id));
       // Windows drops trailing spaces from switch values, so the engine adds the space itself.
       args.push(`--aliasmode-window-label=${buildWindowLabel(profile.name, displayNo).trimEnd()}`);
     }
-    args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
+    args.push(`--force-webrtc-ip-handling-policy=${this.networkWebRtcPolicy(profile)}`);
     // The engine sends no WebRTC packet behind the proxy, and shows a page the proxy's exit IP as
     // its public address, as a browser at that exit would, in place of no candidate at all.
     if (webRtcIp && this.chromiumWebRtcIp(profile)) args.push(`--fingerprint-webrtc-ip=${webRtcIp}`);
@@ -1540,15 +1638,16 @@ export class Launcher {
     }
     // Relayed proxies use a loopback HTTP endpoint. Everything else uses the
     // upstream proxy flag directly.
-    if (relayPort) args.push(`--proxy-server=http://127.0.0.1:${relayPort}`);
+    if (this.networkModeFor(profile) === "direct") args.push("--no-proxy-server");
+    else if (relayPort) args.push(`--proxy-server=http://127.0.0.1:${relayPort}`);
     else {
-      const proxy = proxyServerFlag(profile);
+      const proxy = proxyServerFlag(this.networkProfile(profile));
       if (proxy) args.push(proxy);
     }
     // Load any assigned (unpacked) extensions. Resolve ids → install dirs and
     // skip any that are not installed on this device. --disable-extensions-except
     // keeps the set to the built-in helper and assigned extensions. (Proxy auth uses the relay.)
-    const extDirs: string[] = [];
+    const extDirs: string[] = [...this.managedExtensionsFor(profile).chromiumDirectories];
     const missingExtensionIds: string[] = [];
     for (const id of profile.extensions ?? []) {
       const extension = this.store.getExtension(id);
@@ -1596,7 +1695,16 @@ export class Launcher {
     const otherProfiles = new Set(this.store.listLaunches().map((launch) => launch.profileId));
     for (const pendingId of this.startsInFlight.keys()) otherProfiles.add(pendingId);
     otherProfiles.delete(profileId);
-    return resolveProfileResources(policy, this.memorySnapshot(otherProfiles.size));
+    const allocation = resolveProfileResources(policy, this.memorySnapshot(otherProfiles.size));
+    const profile = this.store.getProfile(profileId);
+    const legacy = profile?.engine !== "firefox" && profile
+      ? this.workspaceHooks.profileResourceLimits?.(profile) ?? this.resourceLimits.get(profileId)
+      : undefined;
+    // The current opt-in Auto/manual policy takes precedence. Explicit workspace
+    // heap edits remain usable without enabling optimization for existing profiles.
+    return !allocation.optimized && legacy
+      ? { ...allocation, optimized: true, jsHeapMb: validateBrowserResourceLimits(legacy).v8OldSpaceMb }
+      : allocation;
   }
 
   async navigate(ws: string, urls: string[], replacePages = false): Promise<void> {
@@ -1630,6 +1738,7 @@ export class Launcher {
       launch.userDataDir,
       launch.binarySha256,
       launch.personaDigest,
+      launch.networkMode,
     ]);
   }
 
@@ -1655,7 +1764,7 @@ export class Launcher {
    * AliasMode's own Chromium 155 builds show --fingerprint-webrtc-ip behind the HTTP proxy they always get.
    */
   private chromiumWebRtcIp(profile: Profile): boolean {
-    return !!profile.proxy && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WEBRTC_IP;
+    return !!this.networkProfile(profile).proxy && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WEBRTC_IP;
   }
 
   /** AliasMode's own Chromium 155 builds take the window label as a launch switch instead of a page script. */
@@ -1830,6 +1939,7 @@ export class Launcher {
     launchArgs: string[] = [],
     opts: LaunchStartOptions = {},
   ): Promise<LaunchStartResult> {
+    if (this.profileMutations.has(profileId)) throw new Error("profile mutation is in progress");
     const stopping = this.stopsInFlight.get(profileId);
     const inFlight = this.startsInFlight.get(profileId);
     const requestedHeadless = opts.headless ?? this.headless;
@@ -1841,6 +1951,9 @@ export class Launcher {
       }
       return inFlight;
     }
+    if (opts.networkMode !== undefined) this.networkModes.set(profileId, normalizeNetworkMode(opts.networkMode));
+    if (opts.resourceLimits !== undefined) this.resourceLimits.set(profileId, validateBrowserResourceLimits(opts.resourceLimits));
+    else if (!this.store.getLaunch(profileId)) this.resourceLimits.delete(profileId);
     // Capture the predecessor before installing this start. The body is deferred
     // until after the map entry exists so even a synchronously-reentrant injected
     // fetch/spawn cannot start a duplicate. Capturing also avoids a wait cycle:
@@ -1872,6 +1985,8 @@ export class Launcher {
         if (this.startsInFlight.get(profileId) === promise) {
           this.startsInFlight.delete(profileId);
           this.startModesInFlight.delete(profileId);
+          this.frozenNetworkModes.delete(profileId);
+          this.frozenManagedExtensions.delete(profileId);
         }
         if (this.startAfterStop.get(profileId) === stopping) this.startAfterStop.delete(profileId);
       });
@@ -1895,7 +2010,11 @@ export class Launcher {
     validateForwardedLaunchArgs(chromeArgs);
     let profile = this.store.getProfile(profileId);
     if (!profile) throw new LaunchRefusal("profile_missing", `Unknown profile: ${profileId}`);
-    if (profile.proxyError) {
+    if (!this.store.getLaunch(profileId)) {
+      this.frozenNetworkModes.set(profileId, this.selectedNetworkMode(profile));
+      this.frozenManagedExtensions.set(profileId, this.selectedManagedExtensions(profile));
+    }
+    if (profile.proxyError && (!this.networkModeFor(profile) || this.networkModeFor(profile) === "proxy")) {
       throw new BrowserLaunchError("preflight", "proxy_invalid");
     }
     // Pages measure the screen divided by the scale they draw at. With this computer's scale on every
@@ -1908,7 +2027,7 @@ export class Launcher {
     let approvedBinarySha256: string;
     try {
       // A running browser is checked with the identity it was launched with; saved edits wait for its next start.
-      const checked = launchedProfile(profile, this.store.getLaunch(profileId));
+      const checked = this.networkProfile(launchedProfile(profile, this.store.getLaunch(profileId)));
       if (checked.proxy?.type === "https" && checked.proxy.user) {
         throw new BrowserLaunchError("preflight", "proxy_https_auth");
       }
@@ -2102,7 +2221,8 @@ export class Launcher {
       profile = current!;
       profileSnapshot = JSON.stringify(profile);
       // The checks above saw the identity of the browser that ran; this launch uses the saved one.
-      if (profile.proxy?.type === "https" && profile.proxy.user) {
+      const activeProxy = this.networkProfile(profile).proxy;
+      if (activeProxy?.type === "https" && activeProxy.user) {
         throw new BrowserLaunchError("preflight", "proxy_https_auth");
       }
       this.assertHostCompatibility(profile);
@@ -2111,7 +2231,9 @@ export class Launcher {
     // whose lookup failed, a rotating proxy that moved) becomes the exit's before any engine reads
     // the profile, so pages see the timezone of the IP they come from. Without an answer the saved
     // timezone stays, and so does one the user typed. The exit IP is WebRTC's public address below.
-    const proxy = profile.proxy;
+    if (!this.frozenNetworkModes.has(profileId)) this.frozenNetworkModes.set(profileId, this.selectedNetworkMode(profile));
+    if (!this.frozenManagedExtensions.has(profileId)) this.frozenManagedExtensions.set(profileId, this.selectedManagedExtensions(profile));
+    const proxy = this.networkProfile(profile).proxy;
     const lookupExit = () => proxy && this.lookupExitLocationFn ? this.lookupExitLocationFn(proxy).catch(() => null) : Promise.resolve(null);
     let exit = await lookupExit();
     // Without the exit IP, WebRTC behind the proxy finds no address at all, which a real browser
@@ -2199,7 +2321,7 @@ export class Launcher {
     const nativeSessionAvailable = nativeRestoreRequested && this.hasNativeSessionArtifacts(userDataDir);
     const restoreLastSession = nativeSessionAvailable;
 
-    if (profile.proxy) await this.persistWebRtcPolicyPreference(profileId);
+    if (profile.proxy || this.networkModeFor(profile) !== undefined) await this.persistWebRtcPolicyPreference(profileId);
 
     // Identity bookmark (#2): `<name> · #<serial>` on a visible bookmark bar, pointing at the card.
     if (SESSION_LAUNCH) {
@@ -2227,8 +2349,8 @@ export class Launcher {
     try {
       // Bring up the loopback HTTP/auth-or-SOCKS bridge before launch. Started
       // here (inside the try) so a later failure rolls it back too.
-      if (needsProxyRelay(profile)) {
-        const p = profile.proxy!;
+      if (needsProxyRelay(this.networkProfile(profile))) {
+        const p = this.networkProfile(profile).proxy!;
         let relay: ProxyRelay;
         try {
           relay = await startProxyRelay(
@@ -2296,6 +2418,8 @@ export class Launcher {
         personaDigest,
         persona,
         headless,
+        networkMode: this.networkModeFor(profile),
+        managedExtensions: this.managedExtensionsFor(profile),
         searchBootstrapRevision,
       };
       this.store.recordLaunch(provisionalLaunch);
@@ -2337,7 +2461,7 @@ export class Launcher {
         log: (msg) => this.log(msg),
         // Mirrors buildArgs exactly: aliasmode forces the policy whenever the
         // profile has a proxy, so the recorded value must use the same test.
-        webrtc: webRtcPolicy(profile),
+        webrtc: this.networkWebRtcPolicy(profile),
       });
       if (capturedFingerprint) {
         // Our own bookkeeping write makes the identity snapshot stale, and the
@@ -2537,6 +2661,8 @@ export class Launcher {
         personaDigest,
         persona,
         headless,
+        networkMode: this.networkModeFor(profile),
+        managedExtensions: this.managedExtensionsFor(profile),
         searchBootstrapRevision,
         processGroupId: proc.processGroupId,
         rootStartTime: proc.rootStartTime,
@@ -2572,6 +2698,8 @@ export class Launcher {
           personaDigest,
           persona,
           headless,
+          networkMode: this.networkModeFor(profile),
+          managedExtensions: this.managedExtensionsFor(profile),
           searchBootstrapRevision,
           processGroupId: proc?.processGroupId,
           rootStartTime: proc?.rootStartTime,
@@ -2673,6 +2801,8 @@ export class Launcher {
       binaryPath: binary.path, binarySha256: binary.sha256, userDataDir, headless,
       personaDigest: this.launchPersonaDigest(profile, binary.sha256, headless),
       persona: launchPersona(profile),
+      networkMode: this.networkModeFor(profile),
+      managedExtensions: this.managedExtensionsFor(profile),
       sessionBaseVersion: opts.sessionBaseVersion,
     };
     if (existsSync(userDataDir)) {
@@ -2706,8 +2836,8 @@ export class Launcher {
       : undefined;
     let reserved = false;
     try {
-      if (needsProxyRelay(profile)) {
-        const proxy = profile.proxy!;
+      if (needsProxyRelay(this.networkProfile(profile))) {
+        const proxy = this.networkProfile(profile).proxy!;
         const relay = await startProxyRelay({
           type: proxy.type === "socks5" ? "socks5" : "http",
           host: proxy.host, port: Number(proxy.port), user: proxy.user, pass: proxy.pass,
@@ -2720,9 +2850,10 @@ export class Launcher {
       this.store.recordLaunch(launch);
       reserved = true;
       this.liveReserved.add(port);
+      const activeProxy = this.networkProfile(profile).proxy;
       const proxy = launch.relayPort
         ? { server: `http://127.0.0.1:${launch.relayPort}` }
-        : profile.proxy ? { server: `${profile.proxy.type}://${profile.proxy.host}:${profile.proxy.port}` } : undefined;
+        : activeProxy ? { server: `${activeProxy.type}://${activeProxy.host}:${activeProxy.port}` } : undefined;
       // The engine shows the label in the native window title and adds the " — " separator itself,
       // so no page script edits document.title.
       const windowLabel = this.skipDefaultWindowLabel
@@ -2731,6 +2862,9 @@ export class Launcher {
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
         userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp, intelMac, hostAvail), proxy, headless,
+        networkMode: launch.networkMode,
+        addonDirs: launch.managedExtensions?.firefoxDirectories,
+        addonUUIDs: launch.managedExtensions?.firefoxAddonUUIDs,
         prefs: {
           ...firefoxStartupPrefs(profile, this.hostPlatform, this.hostArch),
           ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}),
@@ -2778,7 +2912,7 @@ export class Launcher {
       const captured = await recordCapture({
         profile, capture: () => this.captureFingerprintFn(launch.ws),
         save: (id, observed, verdict) => this.store.saveObservedFingerprint(id, observed, verdict),
-        log: (msg) => this.log(msg), webrtc: webRtcPolicy(profile),
+        log: (msg) => this.log(msg), webrtc: this.networkWebRtcPolicy(profile),
       });
       if (captured) {
         profile = this.store.getProfile(profileId)!;
@@ -3428,11 +3562,11 @@ export class Launcher {
       const snapshot = await this.readProcessSnapshotFn?.();
       if (!snapshot || snapshot.incomplete) return { stopped: false, reason: "Linux process-tree scan was inconclusive" };
       if (proof.kind === "group") {
-        if (snapshot.records.some((record) => record.processGroupId === proof.rootPid)) {
+        if (snapshot.records.some((record) => record.processGroupId === proof.rootPid && !linuxProcessExited(record))) {
           return { stopped: false, reason: `owned process group ${proof.rootPid} still has members` };
         }
       } else if (proof.members.some((member) => snapshot.records.some(
-        (record) => record.pid === member.pid && record.startTime === member.startTime,
+        (record) => record.pid === member.pid && record.startTime === member.startTime && !linuxProcessExited(record),
       ))) {
         return { stopped: false, reason: "owned Linux browser tree still has members" };
       }
@@ -3488,7 +3622,7 @@ export class Launcher {
   /** True when this call reattached the relay. */
   private async ensureSurvivorRelay(stored: Profile, launch: LaunchInfo): Promise<boolean> {
     // The browser points at the relay for the proxy it was launched with.
-    const profile = launchedProfile(stored, launch);
+    const profile = this.networkProfile(launchedProfile(stored, launch));
     if (!needsProxyRelay(profile)) return false;
     if (this.relays.has(profile.id)) return false;
     if (!launch.relayPort) {
@@ -3528,7 +3662,12 @@ export class Launcher {
    * Concurrent stops coalesce, and start() will wait for this full transition
    * (including its final launch-row cleanup) before reusing the profile.
    */
-  async stop(profileId: string, expected?: LaunchGeneration): Promise<boolean> {
+  async forceStop(profileId: string, expected?: LaunchGeneration): Promise<boolean> {
+    return this.stop(profileId, expected, true);
+  }
+
+  async stop(profileId: string, expected?: LaunchGeneration, force = false): Promise<boolean> {
+    if (this.profileMutations.has(profileId)) return false;
     if (expected && !this.launchGenerationMatches(profileId, expected)) return false;
     const existingStop = this.stopsInFlight.get(profileId);
     const starting = this.startsInFlight.get(profileId);
@@ -3549,7 +3688,7 @@ export class Launcher {
           await starting.catch(() => {});
         }
         // The post-stop cache delete runs on; start() waits for it and deletion is blocked until it ends.
-        return await this.doStop(profileId, expected);
+        return await this.doStop(profileId, expected, force);
       })
       .finally(() => {
         if (this.stopsInFlight.get(profileId) === promise) {
@@ -3565,7 +3704,7 @@ export class Launcher {
     return current?.debugPort === expected.debugPort && current.startedAt === expected.startedAt;
   }
 
-  private async doStop(profileId: string, expected?: LaunchGeneration): Promise<boolean> {
+  private async doStop(profileId: string, expected?: LaunchGeneration, force = false): Promise<boolean> {
     let launch = this.store.getLaunch(profileId);
     if (expected && !this.launchGenerationMatches(profileId, expected)) return false;
     if (launch && (!launch.binaryPath || !launch.userDataDir)) {
@@ -3610,7 +3749,7 @@ export class Launcher {
         initial.process === "alive" || (launch?.engine === "firefox" && !!launch.firefoxOwner)
       );
       const hasLinuxTreeProof = !requiresLinuxProof || !!linuxProof;
-      if (wasAlive && hasLinuxTreeProof && launch?.ws) {
+      if (!force && wasAlive && hasLinuxTreeProof && launch?.ws) {
         if (!this.launchGenerationMatches(profileId, launch)) return false;
         try {
           const closed = launch.engine === "firefox" && launch.firefoxOwner
@@ -3738,11 +3877,45 @@ export class Launcher {
 
   /** Block destructive profile deletion while any owned lifecycle (or post-stop cache delete) can still use its data directory. */
   profileDeletionBlocked(profileId: string): boolean {
-    return this.startsInFlight.has(profileId)
+    return this.profileMutations.has(profileId)
+      || this.startsInFlight.has(profileId)
       || this.stopsInFlight.has(profileId)
       || this.procs.has(profileId)
       || this.cacheClears.has(profileId)
       || this.store.getLaunch(profileId) !== null;
+  }
+
+  /** Delete an idle profile only after exact native ownership and path checks; never signal a PID. */
+  async removeProfileData(profileId: string, afterRemoval?: () => void | Promise<void>): Promise<void> {
+    assertSafeProfileId(profileId);
+    if (this.profileDeletionBlocked(profileId)) throw new Error("profile has an active or unconfirmed lifecycle; local deletion is blocked");
+    this.profileMutations.add(profileId);
+    try {
+      const directory = this.userDataDir(profileId), root = resolve(this.dataRoot);
+      let holders: number[] | null;
+      try { holders = await this.findProfileDirHolderPidsFn(directory); } catch { holders = null; }
+      if (!holders || holders.length) throw new Error("profile directory ownership is not confirmed idle; local deletion is blocked");
+      if (this.startsInFlight.has(profileId) || this.stopsInFlight.has(profileId) || this.store.getLaunch(profileId) || this.procs.has(profileId)) {
+        throw new Error("profile lifecycle changed during deletion");
+      }
+      let rootInfo: ReturnType<typeof lstatSync> | undefined, directoryInfo: ReturnType<typeof lstatSync> | undefined;
+      try { rootInfo = lstatSync(root); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      try { directoryInfo = lstatSync(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (rootInfo?.isSymbolicLink()) throw new Error("profile storage root must not be a symbolic link or junction");
+      if (this.hostPlatform === "win32" && this.store.listProfiles().some((profile) => profile.id !== profileId && this.userDataDir(profile.id).toLowerCase() === directory.toLowerCase())) {
+        throw new Error("another profile aliases this Windows directory; deletion is blocked");
+      }
+      if (directoryInfo) {
+        if (directoryInfo.isSymbolicLink()) throw new Error("profile directory must not be a symbolic link or junction");
+        if (normalizedExecutablePath(realpathSync(directory)) !== normalizedExecutablePath(join(realpathSync(root), profileId))) {
+          throw new Error("profile directory is outside its canonical storage root");
+        }
+        await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+      await afterRemoval?.();
+      this.resourceLimits.delete(profileId);
+      this.networkModes.delete(profileId);
+    } finally { this.profileMutations.delete(profileId); }
   }
 
   /** Native-close URLs; Cloud capture accepts only the exact launch generation. */
@@ -4327,7 +4500,7 @@ export class Launcher {
     const prior = prefs.webrtc;
     prefs.webrtc = {
       ...(prior && typeof prior === "object" && !Array.isArray(prior) ? prior : {}),
-      ip_handling_policy: "disable_non_proxied_udp",
+      ip_handling_policy: this.networkWebRtcPolicy(this.store.getProfile(profileId)!),
     };
     try {
       await writeFileAtomic(file, JSON.stringify(prefs));
@@ -4726,16 +4899,21 @@ function windowsCommandHasExactArg(commandLine: string, arg: string): boolean {
   return new RegExp(`(?:^|[\\s"])${regexpEscape(arg)}(?=$|[\\s"])`, "i").test(commandLine);
 }
 
-/** Parse PPID, process group and start time from Linux /proc/<pid>/stat. */
-export function parseLinuxProcStat(raw: string): Pick<HostProcessRecord, "parentPid" | "processGroupId" | "startTime"> | null {
+function linuxProcessExited(record: Pick<HostProcessRecord, "linuxState">): boolean {
+  return record.linuxState === "Z" || record.linuxState === "X";
+}
+
+/** Parse process state, PPID, group and start time from Linux /proc/<pid>/stat. */
+export function parseLinuxProcStat(raw: string): Pick<HostProcessRecord, "parentPid" | "processGroupId" | "startTime" | "linuxState"> | null {
   const close = raw.lastIndexOf(")");
   if (close < 0) return null;
   const fields = raw.slice(close + 1).trim().split(/\s+/);
+  const linuxState = fields[0];
   const parentPid = Number(fields[1]);
   const processGroupId = Number(fields[2]);
   const startTime = fields[19];
-  if (!Number.isInteger(parentPid) || !Number.isInteger(processGroupId) || !/^\d+$/.test(startTime ?? "")) return null;
-  return { parentPid, processGroupId, startTime };
+  if (!/^[A-Za-z]$/.test(linuxState ?? "") || !Number.isInteger(parentPid) || !Number.isInteger(processGroupId) || !/^\d+$/.test(startTime ?? "")) return null;
+  return { parentPid, processGroupId, startTime, linuxState };
 }
 
 /** Exact root-anchored Linux ancestry, deepest children first and root last. */
@@ -4767,7 +4945,7 @@ export function collectLinuxProcessTree(
   return [...members.values()].sort((a, b) => b.depth - a.depth || b.pid - a.pid);
 }
 
-function readLinuxProcOwnership(pid: number): Pick<HostProcessRecord, "parentPid" | "processGroupId" | "startTime"> {
+function readLinuxProcOwnership(pid: number): Pick<HostProcessRecord, "parentPid" | "processGroupId" | "startTime" | "linuxState"> {
   const ownership = parseLinuxProcStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
   if (!ownership) throw new Error(`invalid /proc/${pid}/stat`);
   return ownership;
@@ -4776,7 +4954,8 @@ function readLinuxProcOwnership(pid: number): Pick<HostProcessRecord, "parentPid
 function readLinuxProcessRecord(pid: number): HostProcessRecord | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
-    return { pid, executablePath: null, ...readLinuxProcOwnership(pid) };
+    const ownership = readLinuxProcOwnership(pid);
+    return linuxProcessExited(ownership) ? null : { pid, executablePath: null, ...ownership };
   } catch {
     return null;
   }
@@ -4941,7 +5120,7 @@ export async function readHostProcessSnapshot(): Promise<HostProcessSnapshot | n
       for (const entry of readdirSync("/proc")) {
         if (!/^\d+$/.test(entry)) continue;
         const pid = Number(entry);
-        let before: Pick<HostProcessRecord, "parentPid" | "processGroupId" | "startTime">;
+        let before: Pick<HostProcessRecord, "parentPid" | "processGroupId" | "startTime" | "linuxState">;
         try {
           before = readLinuxProcOwnership(pid);
         } catch (err) {
@@ -4966,7 +5145,7 @@ export async function readHostProcessSnapshot(): Promise<HostProcessSnapshot | n
           // exact launch args match the identity being filtered; an unrelated
           // protected process must not poison every Linux empty result.
         }
-        let after: Pick<HostProcessRecord, "parentPid" | "processGroupId" | "startTime">;
+        let after: Pick<HostProcessRecord, "parentPid" | "processGroupId" | "startTime" | "linuxState">;
         try {
           after = readLinuxProcOwnership(pid);
         } catch (err) {
@@ -4977,6 +5156,7 @@ export async function readHostProcessSnapshot(): Promise<HostProcessSnapshot | n
           scanIncomplete = true;
           continue;
         }
+        if (linuxProcessExited(after)) continue;
         const flattenedCommandLine = argv.length === 1 && /\s--/.test(argv[0]!);
         records.push({
           pid,
@@ -5013,6 +5193,11 @@ export async function readHostProcessSnapshot(): Promise<HostProcessSnapshot | n
 
   // No equally exact, dependency-free command-line scanner is available here.
   return null;
+}
+
+/** Warm native process inspection while idle; discard results rather than reuse absence proofs. */
+export async function warmWindowsProcessService(): Promise<boolean> {
+  return !IS_WINDOWS || await readHostProcessSnapshot() !== null;
 }
 
 async function readWindowsProcessImageNames(): Promise<Set<string> | null> {
@@ -5304,10 +5489,35 @@ export function matchProfileDirHolderPids(
     const holdsDir = record.argv
       ? record.argv.includes(dataArg)
       : windowsCommandHasExactArg(record.commandLine ?? "", dataArg);
+    // A standalone Firefox holding the directory is occupancy evidence, never
+    // a Chromium orphan that this classifier authorizes the reaper to signal.
+    const args = record.argv ?? parseProcessCommandArgs(record.commandLine ?? "");
+    const firefoxDirectories = args.flatMap((arg, index) => arg.toLowerCase() === "-profile" ? [args[index + 1] ?? ""] : []);
+    if (firefoxDirectories.some((directory) => possibleProfileDirectoryAlias(directory, userDataDir))) return null;
+    if (!holdsDir) {
+      const chromeDirectories = args.filter((arg) => arg.startsWith("--user-data-dir=")).map((arg) => arg.slice("--user-data-dir=".length));
+      if (chromeDirectories.some((directory) => possibleProfileDirectoryAlias(directory, userDataDir))) return null;
+    }
     if (holdsDir) holders.push(record.pid);
   }
   // An incomplete scan that found nothing is inconclusive, not an authoritative "none".
   return snapshot.incomplete && holders.length === 0 ? null : holders;
+}
+
+/** Conservative occupancy only; do not resolve arbitrary process paths on mapped filesystems. */
+function possibleProfileDirectoryAlias(candidate: string, expected: string): boolean {
+  const windows = /^[a-z]:[\\/]/i.test(expected) || expected.startsWith("\\\\");
+  if (windows) {
+    const normalize = (value: string) => win32.normalize(value.replace(/^\\\\\?\\(?=[a-z]:[\\/])/i, "")).replace(/[\\/]+$/, "").toLowerCase();
+    const actual = normalize(candidate), target = normalize(expected);
+    if (!/^[a-z]:\\/i.test(actual)) return true;
+    if (actual === target) return true;
+    const shortName = /~[0-9]+(?:[.\\/]|$)/;
+    if (win32.basename(actual) !== win32.basename(target) && !shortName.test(win32.basename(actual)) && !shortName.test(win32.basename(target))) return false;
+    return actual.slice(0, 2) === target.slice(0, 2) && shortName.test(actual + "\\" + target);
+  }
+  if (!candidate.startsWith("/")) return true;
+  return resolve(candidate) === resolve(expected);
 }
 
 /** Cross-platform best-effort kill by pid. Used for cross-process orphans. */

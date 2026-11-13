@@ -224,6 +224,13 @@ export type LaunchPersona = Partial<Pick<Profile,
   | "engine" | "chromiumRuntime" | "firefox" | "hardware" | "ua" | "platformOs" | "platform" | "proxy" | "proxyError"
   | "timezone" | "locale" | "screenWidth" | "screenHeight" | "displayScale" | "fingerprintSeed" | "extensions">>;
 
+/** Device-local addon context fixed for one native browser generation. Never export with a profile. */
+export interface LaunchManagedExtensions {
+  chromiumDirectories: string[];
+  firefoxDirectories: string[];
+  firefoxAddonUUIDs: Record<string, string>;
+}
+
 /** Internal launch ownership. Only Chromium's control address is public CDP. */
 export interface LaunchInfo {
   profileId: string;
@@ -256,6 +263,9 @@ export interface LaunchInfo {
   persona?: LaunchPersona;
   /** Explicit mode for this launch generation. Missing only on legacy rows. */
   headless?: boolean;
+  /** Actual route selected for this launch; saved workspace edits wait for the next launch. */
+  networkMode?: "direct" | "system" | "proxy";
+  managedExtensions?: LaunchManagedExtensions;
   /** Search bootstrap attempted before this browser generation was spawned. */
   searchBootstrapRevision?: number;
   /** Linux-only ownership proof for a dedicated browser process group. */

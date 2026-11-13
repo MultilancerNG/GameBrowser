@@ -80,6 +80,7 @@ test("Firefox owner passes native proxy preferences", () => {
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe" }).firefoxUserPrefs).toEqual({
     "media.peerconnection.ice.default_address_only": true,
     "juggler.networkDetail": false,
+    "fission.webContentIsolationStrategy": 1,
   });
 });
 

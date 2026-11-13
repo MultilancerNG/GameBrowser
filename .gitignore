@@ -29,7 +29,9 @@ inbox/*.txt
 reports/
 *.export.txt
 *adspower-export*.txt
-extensions/
+/extensions/*
+!/extensions/stakemode-sync/
+!/extensions/stakemode-sync/**
 
 # Per-install device identity
 .operator-id

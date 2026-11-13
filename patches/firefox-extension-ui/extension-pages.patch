@@ -1,0 +1,7 @@
+--- a/modules/juggler/JugglerFrameChild.sys.mjs
++++ b/modules/juggler/JugglerFrameChild.sys.mjs
+@@ -49,2 +49,2 @@
+-    if (this.document.documentURI.startsWith('moz-extension://'))
+-      return;
++    // GameBrowser: allow the existing Juggler actor to bind installed extension pages.
++    // Package identity and entrypoints remain checked by the local browser bridge.

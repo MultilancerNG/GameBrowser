@@ -1,10 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { connectOfficial, nonClosingContext } from "./agent/playwright-proxy.mjs";
 import { MAX_BYTES, VERSION, operatePersistentContext } from "./playwright-worker.mjs";
@@ -81,6 +82,18 @@ export function camouEnvironment(config, prefs) {
   setChunkedEnv("CAMOU_PREFS", prefs && Object.keys(prefs).length ? asciiJson(prefs) : "");
 }
 
+function normalizedAddonUUIDs(value) {
+  if (!validConfig(value) || Object.keys(value).length > 256) throw typed("invalid_request");
+  const result = Object.create(null);
+  for (const [id, uuid] of Object.entries(value)) {
+    if (!id || id.length > 200 || !/^[a-zA-Z0-9@._{}-]+$/.test(id)
+      || ["__proto__", "prototype", "constructor"].includes(id)
+      || typeof uuid !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) throw typed("invalid_request");
+    result[id] = uuid.toLowerCase();
+  }
+  return result;
+}
+
 async function readConfig() {
   const chunks = [];
   let bytes = 0;
@@ -102,10 +115,14 @@ async function readConfig() {
     || typeof input.owner.token !== "string" || !input.owner.token
     || typeof input.owner.generation !== "string" || !input.owner.generation
     || (input.proxy !== undefined && (!validConfig(input.proxy) || typeof input.proxy.server !== "string" || !input.proxy.server))
+    || (input.networkMode !== undefined && !["direct", "system", "proxy"].includes(input.networkMode))
+    || (input.addonDirs !== undefined && (!Array.isArray(input.addonDirs) || input.addonDirs.length > 32
+      || input.addonDirs.some(path => typeof path !== "string" || !isAbsolute(path) || path.includes("\0"))))
     || (input.args !== undefined && (!Array.isArray(input.args) || input.args.some((arg) => typeof arg !== "string")))
     || (input.headless !== undefined && typeof input.headless !== "boolean")) {
     throw typed("invalid_request");
   }
+  if (input.addonUUIDs !== undefined) normalizedAddonUUIDs(input.addonUUIDs);
   return input;
 }
 
@@ -174,9 +191,13 @@ function send(response, status, body) {
 const NETWORK_DETAIL_OFF = { "juggler.networkDetail": false };
 
 export function firefoxLaunchOptions(input) {
+  const mode = input.networkMode;
+  if ((mode === "direct" || mode === "system") && input.proxy) throw typed("invalid_request");
+  if (mode === "proxy" && !input.proxy) throw typed("invalid_request");
+  if (mode !== undefined && !["direct", "system", "proxy"].includes(mode)) throw typed("invalid_request");
   // A stored graphics identity must show on every computer, also where the browser would turn WebGL off.
   const graphics = input.config?.["webGl:vendor"] ? { "webgl.force-enabled": true } : {};
-  return {
+  const options = {
     executablePath: input.executablePath,
     viewport: null,
     // Pages see the computer's colour scheme, motion, contrast and forced colours, as in stock
@@ -186,8 +207,8 @@ export function firefoxLaunchOptions(input) {
     reducedMotion: null,
     forcedColors: null,
     contrast: null,
-    ...(input.proxy ? {
-      proxy: input.proxy,
+    ...(input.proxy || mode === "system" ? {
+      ...(input.proxy ? { proxy: input.proxy } : {}),
       firefoxUserPrefs: {
         "media.peerconnection.ice.proxy_only": true,
         "media.peerconnection.ice.default_address_only": true,
@@ -202,6 +223,12 @@ export function firefoxLaunchOptions(input) {
     ...(input.headless === undefined ? {} : { headless: input.headless }),
     ...(input.args ? { args: input.args } : {}),
   };
+  const firefoxUserPrefs = /** @type {Record<string, boolean | number | string>} */ (options.firefoxUserPrefs);
+  if (mode !== undefined) firefoxUserPrefs["network.proxy.type"] = mode === "direct" ? 0 : mode === "system" ? 5 : 1;
+  if (input.addonUUIDs !== undefined) firefoxUserPrefs["extensions.webextensions.uuids"] = JSON.stringify(normalizedAddonUUIDs(input.addonUUIDs));
+  // Normal site isolation prevents the Juggler reload/session-history duplication bug.
+  firefoxUserPrefs["fission.webContentIsolationStrategy"] = 1;
+  return { ...options, firefoxUserPrefs };
 }
 
 /**
@@ -218,15 +245,67 @@ export function trackFirefoxPages(context) {
   return () => crashed || context.pages().length > 0;
 }
 
+export function firefoxManagedConfig(input) {
+  const addons = input.addonDirs ?? [];
+  if (!Array.isArray(addons) || addons.length > 32 || addons.some(path => typeof path !== "string" || !isAbsolute(path) || path.includes("\0"))) throw typed("invalid_request");
+  // Only the validated local extension manager may supply addon paths.
+  return { ...input.config, addons: [...addons] };
+}
+
+export async function prepareManagedFirefoxPrefs(input) {
+  const managedUUIDs = input.addonUUIDs === undefined ? undefined : normalizedAddonUUIDs(input.addonUUIDs);
+  const value = firefoxLaunchOptions(input).firefoxUserPrefs["network.proxy.type"];
+  const target = join(input.userDataDir, "user.js");
+  async function readPrefs(path, maxBytes) {
+    try {
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > maxBytes) throw typed("operation_failed");
+      return await readFile(path, "utf8");
+    } catch (error) { if (error?.code !== "ENOENT") throw error; return ""; }
+  }
+  const contents = await readPrefs(target, 1024 * 1024);
+  const mergedUUIDs = managedUUIDs === undefined ? undefined : Object.create(null);
+  if (mergedUUIDs) {
+    // prefs.js is JavaScript, not JSON. Read only literal user_pref JSON strings;
+    // never evaluate profile-controlled expressions or load browser code here.
+    const sources = [await readPrefs(join(input.userDataDir, "prefs.js"), 4 * 1024 * 1024), contents];
+    for (const source of sources) for (const line of source.split(/\r?\n/)) {
+      const match = /^\s*user_pref\(\s*["']extensions\.webextensions\.uuids["']\s*,\s*("(?:[^"\\]|\\.)*")\s*\)\s*;\s*(?:\/\/.*)?$/.exec(line);
+      if (!match) continue;
+      try {
+        const mapping = normalizedAddonUUIDs(JSON.parse(JSON.parse(match[1])));
+        for (const [id, uuid] of Object.entries(mapping)) mergedUUIDs[id] = uuid;
+      } catch { /* Malformed old mappings do not become trusted runtime origins. */ }
+    }
+    for (const [id, uuid] of Object.entries(managedUUIDs)) mergedUUIDs[id] = uuid;
+    if (Object.keys(mergedUUIDs).length > 256) throw typed("operation_failed");
+  }
+  const kept = contents.split(/\r?\n/).filter(line => !(
+    (input.networkMode !== undefined && /^\s*user_pref\(\s*["']network\.proxy\.type["']\s*,/.test(line))
+    || (mergedUUIDs && /^\s*user_pref\(\s*["']extensions\.webextensions\.uuids["']\s*,/.test(line))
+    || /^\s*user_pref\(\s*["']fission\.webContentIsolationStrategy["']\s*,/.test(line)
+  ));
+  if (input.networkMode !== undefined) kept.push(`user_pref("network.proxy.type", ${JSON.stringify(value)});`);
+  if (mergedUUIDs) kept.push(`user_pref("extensions.webextensions.uuids", ${JSON.stringify(JSON.stringify(mergedUUIDs))});`);
+  kept.push('user_pref("fission.webContentIsolationStrategy", 1);');
+  const temporary = `${target}.${randomBytes(12).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporary, kept.join("\n") + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await rename(temporary, target);
+  } finally { await rm(temporary, { force: true }); }
+  return mergedUUIDs;
+}
+
 async function launchOwner(input) {
   if (await sha256File(input.executablePath) !== input.executableSha256) throw typed("operation_failed");
-  camouEnvironment(input.config, input.prefs);
+  const addonUUIDs = await prepareManagedFirefoxPrefs(input);
+  camouEnvironment(firefoxManagedConfig(input), input.prefs);
   process.env.ALIASMODE_FIREFOX_SESSION_GENERATION = input.sessionGeneration ?? input.owner.generation;
   let runtime;
   try { runtime = await import(pathToFileURL(join(ROOT, "node_modules", "playwright-core", "index.mjs")).href); } catch { throw typed("runtime_unavailable"); }
   if (!runtime.firefox) throw typed("runtime_unavailable");
   try {
-    return await runtime.firefox.launchPersistentContext(input.userDataDir, firefoxLaunchOptions(input));
+    return await runtime.firefox.launchPersistentContext(input.userDataDir, firefoxLaunchOptions(addonUUIDs === undefined ? input : { ...input, addonUUIDs }));
   } catch {
     throw typed("operation_failed");
   }

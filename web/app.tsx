@@ -1279,6 +1279,13 @@ function App() {
   const [showCreate, setShowCreate] = useState(false);
   const [createProxyOpen, setCreateProxyOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
+  useEffect(() => {
+    const route = new URLSearchParams(window.location.search);
+    const page = route.get("view");
+    if (page && Object.hasOwn(PAGE_TITLES, page)) setView(page as keyof typeof PAGE_TITLES);
+    const tab = route.get("tab");
+    if (SETTINGS_TABS.some((item) => item.key === tab)) setSettingsTab(tab as SettingsTab);
+  }, []);
   const [remoteMcp, setRemoteMcp] = useState<RemoteMcpSettings>({ state: "idle" });
   const [remoteMcpTokenVisible, setRemoteMcpTokenVisible] = useState(false);
   const [remoteMcpCopied, setRemoteMcpCopied] = useState<"url" | "token" | null>(null);
@@ -1432,6 +1439,7 @@ function App() {
   const updateFileRef = useRef<HTMLInputElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [profileExportRequest, setProfileExportRequest] = useState<ProfileExportRequest | null>(null);
+  const initialRouteActionHandled = useRef(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState("");
   const [addingGroup, setAddingGroup] = useState(false);
@@ -1467,6 +1475,10 @@ function App() {
   const canEditCloud = !isCloudMode || cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin" ||
     team?.folders.some((folder) => folder.permission === "edit" && !folder.archivedAt) === true;
   const canManageCloudFolders = cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin";
+  useEffect(() => {
+    if (!workspaceReady || restartRequired || appMode?.legacyRemote || new URLSearchParams(window.location.search).has("view")) return;
+    window.location.replace("/workspace/dashboard.html");
+  }, [workspaceReady, restartRequired, appMode?.legacyRemote]);
   // In-app wallet and proxy store, when this AliasMode Cloud has it. Otherwise
   // the offers stay links to NobleProxy.
   const cloudStore = useCloudStore(isCloudMode && workspaceReady && !restartRequired, `${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`);
@@ -2824,6 +2836,34 @@ function App() {
     setBulkSource("file");
     setShowBulk(true);
   };
+  useEffect(() => {
+    if (!workspaceReady || !loaded || initialRouteActionHandled.current) return;
+    const route = new URLSearchParams(window.location.search);
+    const action = route.get("action") ?? route.get("transfer");
+    if (action !== "import" && action !== "export") return;
+    initialRouteActionHandled.current = true;
+    if (action === "import") openBulk();
+    else {
+      let selectedIds: string[] = [];
+      try {
+        const key = "gamebrowser.liveExportSelection";
+        const raw = sessionStorage.getItem(key);
+        sessionStorage.removeItem(key);
+        if (raw) {
+          const handoff = JSON.parse(raw);
+          const available = new Set(profiles.map((profile) => profile.id));
+          if (!handoff || !Array.isArray(handoff.ids) || handoff.ids.length > 10000 ||
+            !Number.isFinite(handoff.at) || Date.now() - handoff.at > 300000 || handoff.at > Date.now() + 5000 ||
+            handoff.ids.some((id: unknown) => typeof id !== "string" || !available.has(id))) throw new Error("Selection unavailable");
+          selectedIds = [...new Set<string>(handoff.ids)];
+        }
+      } catch {
+        setActionErr("The Live workspace selection is no longer available. Select the profiles here before exporting.");
+        return;
+      }
+      setProfileExportRequest({ selectedIds, viewIds: profiles.map((profile) => profile.id) });
+    }
+  }, [workspaceReady, loaded]);
   const closeBulk = () => {
     setShowBulk(false);
     setBulkFiles([]);
@@ -3463,15 +3503,15 @@ function App() {
               <h1 id="onboarding-title">{appMode?.mode === "cloud" ? t("Switching to Cloud mode") : t("Switching to Local mode")}</h1>
               {desktopInvoke() ? (
                 <>
-                  <p role="status">{t("AliasMode restarts to finish the switch.")}</p>
+                  <p role="status">{t("GameBrowser restarts to finish the switch.")}</p>
                   {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                  <button className="mode-primary" type="button" onClick={() => void desktopInvoke()?.("restart_after_mode_change").catch((error) => setModeErr(String(error)))}>{t("Restart AliasMode")}</button>
+                  <button className="mode-primary" type="button" onClick={() => void desktopInvoke()?.("restart_after_mode_change").catch((error) => setModeErr(String(error)))}>{t("Restart GameBrowser")}</button>
                 </>
               ) : (
                 <>
-                  <p>{t("Quit and reopen AliasMode to finish the switch.")}</p>
+                  <p>{t("Quit and reopen GameBrowser to finish the switch.")}</p>
                   {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                  <button className="mode-primary" type="button" onClick={() => window.close()}>{t("Quit AliasMode")}</button>
+                  <button className="mode-primary" type="button" onClick={() => window.close()}>{t("Quit GameBrowser")}</button>
                 </>
               )}
             </>
@@ -3580,7 +3620,7 @@ function App() {
                 </button>
                 <button className="mode-option" type="button" disabled={modeBusy} onClick={() => chooseMode("local")}>
                   <span className="badge"><Icon name="laptop" className="lg" /></span>
-                  <strong>AliasMode Local</strong>
+                  <strong>GameBrowser Local</strong>
                   <span>{t("No account. Profile data stays on this computer and analytics is off.")}</span>
                 </button>
               </div>
@@ -3694,6 +3734,9 @@ function App() {
         </div>
 
         <nav className="sidenav" aria-label={t("Sections")}>
+          {!appMode?.legacyRemote && <a className="navitem" href="/workspace/dashboard.html" data-tip="Live workspace" title="Live workspace">
+            <Icon name="profiles" /><span className="navlabel">Live workspace</span>
+          </a>}
           <button
             type="button"
             className={`navitem${view === "profiles" && group === "all" && !sharedOnly ? " active" : ""}`}
