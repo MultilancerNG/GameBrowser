@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { BrowserBridge } from "./browserBridge.ts";
 import type { LiveFrame } from "./protocol.ts";
+import { LaunchViewportUnavailableError } from "../launch-viewport.ts";
 
 const desktop = { width: 1473, height: 913 };
 function jpeg({ width, height }: { width: number; height: number }): Buffer {
@@ -144,5 +145,55 @@ test("portrait mobile viewport remains saved geometry in the live attachment", a
   (bridge as any).options.getViewport = () => ({ width: 390, height: 844 });
   try { pages[0]!.gate.resolve(); await bridge.attach("p"); bridge.setVisible(["p"]); await (bridge as any).frame("p");
     expect(pages[0]!.requested).toEqual({ width: 390, height: 844 }); expect({ width: frames[0]!.width, height: frames[0]!.height }).toEqual({ width: 390, height: 844 });
+  } finally { await bridge.stop(); }
+});
+
+test("Firefox prepares the recorded small content area without relaxing raw saved-screen bounds", async () => {
+  const { bridge, pages, frames } = fixture("firefox");
+  const options = (bridge as any).options, originalLaunch = options.getLaunch;
+  const viewport = { width: 320, height: 152 };
+  options.getLaunch = () => ({ ...originalLaunch(), contentViewport: viewport });
+  options.getViewport = () => viewport;
+  try {
+    pages[0]!.gate.resolve(); await bridge.attach("p"); bridge.setVisible(["p"]); await (bridge as any).frame("p");
+    expect(pages[0]!.requested).toEqual(viewport);
+    expect({ width: frames[0]!.width, height: frames[0]!.height }).toEqual(viewport);
+    await expect(bridge.control({ profileId: "p", kind: "click", x: 10, y: 160 })).rejects.toThrow("outside");
+  } finally { await bridge.stop(); }
+});
+
+for (const engine of ["chromium", "firefox"] as const) {
+  test(`${engine} cannot attach raw undersized geometry without a trusted Firefox launch snapshot`, async () => {
+    const { bridge, connects } = fixture(engine);
+    (bridge as any).options.getViewport = () => ({ width: 320, height: 152 });
+    try { await expect(bridge.attach("p")).rejects.toThrow(); expect(connects()).toBe(0); }
+    finally { await bridge.stop(); }
+  });
+}
+
+test("Firefox rejects geometry from a different generation before native attachment", async () => {
+  const { bridge, connects } = fixture("firefox");
+  const options = (bridge as any).options, originalLaunch = options.getLaunch;
+  options.getLaunch = () => ({ ...originalLaunch(), contentViewport: { width: 1280, height: 672 } });
+  options.getViewport = () => ({ width: 390, height: 796 });
+  try { await expect(bridge.attach("p")).rejects.toThrow(); expect(connects()).toBe(0); }
+  finally { await bridge.stop(); }
+});
+
+test("legacy Firefox viewport restart guidance survives the attachment boundary", async () => {
+  const { bridge, connects } = fixture("firefox");
+  (bridge as any).options.getViewport = () => { throw new LaunchViewportUnavailableError(); };
+  try { await expect(bridge.attach("p")).rejects.toThrow("Stop and restart this profile"); expect(connects()).toBe(0); }
+  finally { await bridge.stop(); }
+});
+
+test("recorded oversized Firefox content is refused before Live attachment without mutating its launch", async () => {
+  const { bridge, connects } = fixture("firefox");
+  const options = (bridge as any).options, originalLaunch = options.getLaunch;
+  const launch = { ...originalLaunch(), contentViewport: { width: 5000, height: 2500 } };
+  options.getLaunch = () => launch; options.getViewport = () => launch.contentViewport;
+  try {
+    await expect(bridge.attach("p")).rejects.toThrow("Stop this profile and set its desktop screen");
+    expect(connects()).toBe(0); expect(options.getLaunch()).toBe(launch);
   } finally { await bridge.stop(); }
 });

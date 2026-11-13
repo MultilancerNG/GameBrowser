@@ -125,5 +125,7 @@ jobs:
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           if ($env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag must match application version' }
-          gh release create $env:GITHUB_REF_NAME artifacts/windows/* --verify-tag --title "GameBrowser $version" --notes 'Windows x64 beta. Developed by Solomon Gbeta (solomon.ng). Unsigned installers; verify SHA256SUMS.txt. Full includes WebView2; slim downloads WebView2 when needed. Based on AliasMode under Apache-2.0.' --prerelease
+          $notesPath = Join-Path $PWD "release-notes/$version.md"
+          if (-not (Test-Path $notesPath -PathType Leaf)) { throw 'Reviewed release notes are missing for this version' }
+          gh release create $env:GITHUB_REF_NAME artifacts/windows/* --verify-tag --title "GameBrowser $version" --notes-file $notesPath --prerelease
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

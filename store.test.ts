@@ -133,6 +133,42 @@ test("store persists Firefox launch ownership without exposing it through profil
   store.close();
 });
 
+test("effective launch content geometry survives database reopen and belongs only to its recorded generation", () => {
+  const root = mkdtempSync(join(tmpdir(), "gamebrowser-viewport-store-")), path = join(root, "profiles.sqlite");
+  let store: ProfileStore | undefined;
+  try {
+    store = new ProfileStore(path);
+    const launch = { profileId: "viewport-proof", pid: 123, debugPort: 4321, ws: "firefox://local", startedAt: 1, engine: "firefox" as const,
+      contentViewport: { width: 320, height: 152 } };
+    store.recordLaunch(launch);
+    const read = store.getLaunch(launch.profileId)!;
+    read.contentViewport!.height = 999;
+    expect(store.getLaunch(launch.profileId)?.contentViewport).toEqual({ width: 320, height: 152 });
+    store.close(); store = new ProfileStore(path);
+    expect(store.getLaunch(launch.profileId)?.contentViewport).toEqual({ width: 320, height: 152 });
+    store.recordLaunch({ ...launch, pid: 456, startedAt: 2, contentViewport: { width: 390, height: 796 } });
+    expect(store.getLaunch(launch.profileId)).toMatchObject({ pid: 456, startedAt: 2, contentViewport: { width: 390, height: 796 } });
+    const { contentViewport: _viewport, ...legacy } = launch;
+    store.recordLaunch({ ...legacy, pid: 789, startedAt: 3 });
+    expect(store.getLaunch(launch.profileId)).toMatchObject({ pid: 789, startedAt: 3 });
+    expect(store.getLaunch(launch.profileId)?.contentViewport).toBeUndefined();
+  } finally { store?.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("malformed effective content geometry cannot replace a valid launch snapshot", () => {
+  const store = memStore();
+  const launch = { profileId: "viewport-proof", pid: 123, debugPort: 4321, ws: "firefox://local", startedAt: 1,
+    contentViewport: { width: 1280, height: 672 } };
+  try {
+    store.recordLaunch(launch);
+    for (const contentViewport of [{ width: 0, height: 152 }, { width: 320, height: -1 }, { width: Number.MAX_SAFE_INTEGER + 1, height: 200 },
+      { width: 320, height: Infinity }, { width: 320.5, height: 152 }, { width: 320, height: 152, extra: true }, { width: 320 }, null]) {
+      expect(() => store.recordLaunch({ ...launch, pid: 456, contentViewport } as any)).toThrow();
+      expect(store.getLaunch(launch.profileId)).toMatchObject(launch);
+    }
+  } finally { store.close(); }
+});
+
 test("rename is exact, idempotent, durable, and preserves all profile metadata", () => {
   const dir = mkdtempSync(join(tmpdir(), "cloak-rename-"));
   const db = join(dir, "profiles.sqlite");

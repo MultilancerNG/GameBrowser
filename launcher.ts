@@ -35,6 +35,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { dlopen, ptr } from "bun:ffi";
 import type { CookieRecord, LaunchInfo, LaunchManagedExtensions, LaunchPersona, Profile, ProxySpec } from "./types.ts";
 import { normalizeLaunchManagedExtensions } from "./launch-managed-extensions.ts";
+import { LaunchViewportUnavailableError, validateLaunchViewport, validateLiveViewport } from "./launch-viewport.ts";
 import { cookiesForEngine } from "./parse.ts";
 import type { ProfileStore } from "./store.ts";
 import { effectiveProfileProxy, normalizeNetworkMode, type NetworkMode } from "./workspace/networkPolicy.ts";
@@ -1171,11 +1172,17 @@ export class Launcher {
     this.workspaceHooks = { ...hooks };
   }
 
-  /** Desktop workspace viewports use the saved persona's CSS-pixel screen. */
+  /** Use this generation's fitted Firefox content area, or Chromium's saved CSS-pixel screen. */
   desktopViewport(profileId: string): { width: number; height: number } {
     const stored = this.store.getProfile(profileId);
     if (!stored) throw new Error("profile not found");
-    const screen = this.pageScreen(launchedProfile(stored, this.store.getLaunch(profileId)));
+    const launch = this.store.getLaunch(profileId);
+    const profile = launchedProfile(stored, launch);
+    if (profile.engine === "firefox") {
+      if (!launch?.contentViewport) throw new LaunchViewportUnavailableError();
+      return validateLiveViewport(launch.contentViewport);
+    }
+    const screen = this.pageScreen(profile);
     return { width: screen.screenWidth, height: screen.screenHeight };
   }
 
@@ -2836,6 +2843,26 @@ export class Launcher {
       : undefined;
     let reserved = false;
     try {
+      // Record exactly the window fit sent to this owner. Recomputing it after a
+      // saved edit, display change or manager restart would target a different viewport.
+      const windowLabel = this.skipDefaultWindowLabel
+        ? undefined
+        : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
+      const runtimeConfig = firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp, intelMac, hostAvail);
+      // Imported identities can leave an axis unlocked. It can use the saved
+      // screen target, fitted to this launch's display, without changing identity.
+      const contentAxis = (axis: "Width" | "Height"): unknown => {
+        const inner = runtimeConfig[`window.inner${axis}`];
+        if (inner !== undefined) return inner;
+        const screen = axis === "Width" ? profile.screenWidth : profile.screenHeight;
+        const display = axis === "Width" ? hostAvail?.width : hostAvail?.height;
+        const fitted = [`window.outer${axis}`, `screen.avail${axis}`, `screen.${axis.toLowerCase()}`]
+          .map(key => runtimeConfig[key]).filter((value): value is number => typeof value === "number");
+        return Math.min(screen, display ?? screen, ...fitted);
+      };
+      launch.contentViewport = validateLaunchViewport({
+        width: contentAxis("Width"), height: contentAxis("Height"),
+      });
       if (needsProxyRelay(this.networkProfile(profile))) {
         const proxy = this.networkProfile(profile).proxy!;
         const relay = await startProxyRelay({
@@ -2854,14 +2881,9 @@ export class Launcher {
       const proxy = launch.relayPort
         ? { server: `http://127.0.0.1:${launch.relayPort}` }
         : activeProxy ? { server: `${activeProxy.type}://${activeProxy.host}:${activeProxy.port}` } : undefined;
-      // The engine shows the label in the native window title and adds the " — " separator itself,
-      // so no page script edits document.title.
-      const windowLabel = this.skipDefaultWindowLabel
-        ? undefined
-        : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp, intelMac, hostAvail), proxy, headless,
+        userDataDir, config: runtimeConfig, proxy, headless,
         networkMode: launch.networkMode,
         addonDirs: launch.managedExtensions?.firefoxDirectories,
         addonUUIDs: launch.managedExtensions?.firefoxAddonUUIDs,

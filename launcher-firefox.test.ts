@@ -9,6 +9,7 @@ import { Launcher, BrowserLaunchError, decodeMozLz4, type HostProcessSnapshot, t
 import { FirefoxOwnerError } from "./firefox-runtime.ts";
 import { ProfileStore } from "./store.ts";
 import type { Profile } from "./types.ts";
+import { withDesktopScreen } from "./workspace/displayPolicy.ts";
 
 const cleanup: Array<() => void> = [];
 const LABEL = "Firefox profile · #1";
@@ -130,6 +131,103 @@ test("Firefox launches one saved persona and retains ownership across manager re
   expect(f.launches()).toBe(1);
   expect(await restarted.stop(f.profile.id)).toBe(true);
   expect(f.store.getLaunch(f.profile.id)).toBeNull();
+});
+
+for (const dimensions of [
+  { screen: { width: 1280, height: 720 }, viewport: { width: 1280, height: 672 } },
+  { screen: { width: 320, height: 200 }, viewport: { width: 320, height: 152 } },
+  { screen: { width: 390, height: 844 }, viewport: { width: 390, height: 796 } },
+  { screen: { width: 1280, height: 720 }, hostAvail: { width: 1024, height: 600 }, viewport: { width: 1024, height: 600 } },
+]) {
+  test(`Firefox records fitted content geometry for ${dimensions.screen.width}×${dimensions.screen.height}${dimensions.hostAvail ? " on a smaller display" : ""}`, async () => {
+    const f = fixture();
+    const profile = withDesktopScreen(f.profile, dimensions.screen);
+    f.store.upsertProfile(profile);
+    const saved = f.store.getProfile(profile.id)!;
+    const launcher = new Launcher({ ...f.options, hostAvail: dimensions.hostAvail });
+    await launcher.start(profile.id);
+    expect(f.config()).toMatchObject({ "window.innerWidth": dimensions.viewport.width, "window.innerHeight": dimensions.viewport.height });
+    expect(f.store.getLaunch(profile.id)?.contentViewport).toEqual(dimensions.viewport);
+    expect(launcher.desktopViewport(profile.id)).toEqual(dimensions.viewport);
+    expect(f.store.getProfile(profile.id)).toEqual(saved);
+    await launcher.stop(profile.id);
+  });
+}
+
+test("Firefox live geometry remains frozen through saved edits and manager/display changes until a fresh generation", async () => {
+  const f = fixture();
+  f.store.upsertProfile(withDesktopScreen(f.profile, { width: 1280, height: 720 }));
+  await f.launcher.start(f.profile.id);
+  const original = f.store.getLaunch(f.profile.id)!;
+  f.store.upsertProfile(withDesktopScreen(f.store.getProfile(f.profile.id)!, { width: 390, height: 844 }));
+  const restarted = new Launcher({ ...f.options, hostAvail: { width: 640, height: 480 } });
+  expect(restarted.desktopViewport(f.profile.id)).toEqual({ width: 1280, height: 672 });
+  expect((await restarted.start(f.profile.id)).reattached).toBe(true);
+  expect(f.store.getLaunch(f.profile.id)?.personaDigest).toBe(original.personaDigest);
+  expect(f.launches()).toBe(1);
+  expect(f.killed).toEqual([]);
+  await restarted.stop(f.profile.id);
+  await restarted.start(f.profile.id);
+  expect(restarted.desktopViewport(f.profile.id)).toEqual({ width: 390, height: 480 });
+  expect(f.store.getLaunch(f.profile.id)?.contentViewport).toEqual({ width: 390, height: 480 });
+  expect(f.store.getLaunch(f.profile.id)?.personaDigest).not.toBe(original.personaDigest);
+  await restarted.stop(f.profile.id);
+});
+
+test("Firefox imported unlocked content axes respect fitted outer and available dimensions", async () => {
+  const f = fixture();
+  const profile = withDesktopScreen(f.profile, { width: 1280, height: 720 });
+  const config = profile.firefox!.config;
+  delete config["window.innerWidth"]; delete config["window.innerHeight"];
+  config["window.outerWidth"] = 600; config["window.outerHeight"] = 400;
+  f.store.upsertProfile(profile);
+  const saved = f.store.getProfile(profile.id)!;
+  await f.launcher.start(profile.id);
+  expect(f.config()).not.toHaveProperty("window.innerWidth"); expect(f.config()).not.toHaveProperty("window.innerHeight");
+  expect(f.launcher.desktopViewport(profile.id)).toEqual({ width: 600, height: 400 });
+  expect(f.store.getProfile(profile.id)).toEqual(saved);
+  await f.launcher.stop(profile.id);
+});
+
+test("Firefox imported partial content geometry retains its locked axis and bounds the unlocked axis", async () => {
+  const f = fixture();
+  const profile = withDesktopScreen(f.profile, { width: 1280, height: 720 });
+  delete profile.firefox!.config["window.innerHeight"];
+  profile.firefox!.config["window.outerHeight"] = 400;
+  f.store.upsertProfile(profile);
+  await f.launcher.start(profile.id);
+  expect(f.launcher.desktopViewport(profile.id)).toEqual({ width: 1280, height: 400 });
+  expect(f.config()).toMatchObject({ "window.innerWidth": 1280, "window.outerHeight": 400 });
+  expect(f.config()).not.toHaveProperty("window.innerHeight");
+  await f.launcher.stop(profile.id);
+});
+
+test("legacy Firefox without recorded content geometry requires user restart without changing its live process", async () => {
+  const f = fixture();
+  await f.launcher.start(f.profile.id);
+  const { contentViewport: _viewport, ...legacy } = f.store.getLaunch(f.profile.id)!;
+  f.store.recordLaunch(legacy);
+  expect(() => f.launcher.desktopViewport(f.profile.id)).toThrow("Stop and restart this profile");
+  expect(f.store.getLaunch(f.profile.id)).toMatchObject({ pid: legacy.pid, startedAt: legacy.startedAt });
+  expect(f.launches()).toBe(1);
+  expect(f.killed).toEqual([]);
+  await f.launcher.stop(f.profile.id);
+});
+
+test("an ordinary large Firefox profile still starts while only its Live capture is refused", async () => {
+  const f = fixture();
+  const profile = { ...f.profile, screenWidth: 5120, screenHeight: 2880, firefox: { ...f.profile.firefox!, config: {
+    ...f.profile.firefox!.config, "screen.width": 5120, "screen.height": 2880, "window.innerWidth": 5000,
+    "window.innerHeight": 2500, "window.outerWidth": 5100, "window.outerHeight": 2800,
+  } } };
+  f.store.upsertProfile(profile);
+  const saved = f.store.getProfile(profile.id)!;
+  await f.launcher.start(profile.id);
+  expect(f.store.getLaunch(profile.id)?.contentViewport).toEqual({ width: 5000, height: 2500 });
+  expect(() => f.launcher.desktopViewport(profile.id)).toThrow("live-view pixel budget");
+  expect(f.store.getProfile(profile.id)).toEqual(saved);
+  expect(f.launches()).toBe(1); expect(f.killed).toEqual([]);
+  await f.launcher.stop(profile.id);
 });
 
 test("Firefox resources change startup cache preferences without editing its saved persona", async () => {

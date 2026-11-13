@@ -10,6 +10,7 @@ import { sensitiveTargetPattern } from "./eventPolicy.ts";
 import type { BrowserWorkflowStep } from "./workflowEngine.ts";
 import type { RelayTransport } from "./syncRelay.ts";
 import { validateDesktopScreen } from "./displayPolicy.ts";
+import { LaunchViewportUnavailableError, validateLiveViewport } from "../launch-viewport.ts";
 
 interface TrackedTab { id: string; page: Page; title: string; loading: boolean; viewportReady: Promise<void>; quarantined: boolean; }
 class NavigationCancelled extends Error { constructor() { super("Browser navigation cancelled"); this.name = "NavigationCancelled"; } }
@@ -21,7 +22,7 @@ interface BridgeOptions {
   /** Certifies the current owned process before any endpoint attachment or reuse. */
   authorizeLaunch?(profileId: string): Promise<boolean>;
   getConfig(profileId: string): SyncProfileConfig | undefined;
-  /** Production supplies the saved desktop screen, independent of dashboard size. */
+  /** Production supplies the launched content geometry, independent of dashboard size. */
   getViewport?(profileId: string): { width: number; height: number } | undefined;
   canControl(profileId: string): boolean;
   onFrame(frame: LiveFrame): void;
@@ -95,10 +96,20 @@ export class BrowserBridge {
   private async connect(profileId: string, launch: LaunchInfo, generation: string): Promise<Connection> {
     await this.detach(profileId, false);
     this.assertLaunchGeneration(profileId, generation);
-    // Use the saved viewport dimensions without regenerating profile identity.
+    // Firefox's fitted content area can be smaller than its saved monitor.
+    // Only a recorded generation snapshot permits these smaller internal dimensions.
     let viewport: { width: number; height: number } | undefined;
-    try { viewport = this.options.getViewport ? validateDesktopScreen(this.options.getViewport(profileId)) : undefined; }
-    catch { throw new Error("Stop this profile and set its desktop screen to width 320–4096 and height 200–4096 within the live-view pixel budget before opening its browser"); }
+    try {
+      if (this.options.getViewport) {
+        const value = this.options.getViewport(profileId);
+        const recorded = launch.engine === "firefox" && launch.contentViewport ? validateLiveViewport(launch.contentViewport) : undefined;
+        viewport = recorded ? validateLiveViewport(value) : validateDesktopScreen(value);
+        if (recorded && (recorded.width !== viewport.width || recorded.height !== viewport.height)) throw new Error("Browser viewport changed during attachment");
+      }
+    } catch (error) {
+      if (error instanceof LaunchViewportUnavailableError) throw error;
+      throw new Error("Stop this profile and set its desktop screen to width 320–4096 and height 200–4096 within the live-view pixel budget before opening its browser");
+    }
     const browser = this.options.connect ? await this.options.connect(launch) : await connectBrowser(launch);
     if (this.stopped || this.suspended.has(profileId) || !this.options.getLaunch(profileId) || `${this.options.getLaunch(profileId)!.pid}:${this.options.getLaunch(profileId)!.startedAt}:${this.options.getLaunch(profileId)!.ws}` !== generation) {
       await disconnectBrowser(browser);

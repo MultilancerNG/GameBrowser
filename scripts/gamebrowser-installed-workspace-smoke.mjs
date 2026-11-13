@@ -34,6 +34,14 @@ async function api(operation, body, method) {
   assert.equal(response.ok, true, `Installed workspace ${operation.split('/').at(-1)} request succeeds (${response.status})`);
   return response.json();
 }
+async function clickFixturePoint(canvas, y) {
+  const box = await canvas.boundingBox();
+  const pixels = await canvas.evaluate(element => ({ width: element.width, height: element.height }));
+  assert.ok(box && box.width > 0 && box.height > 0, 'Live canvas has visible CSS geometry');
+  assert.ok(Number.isSafeInteger(pixels.width) && pixels.width > 0 && Number.isSafeInteger(pixels.height) && pixels.height > y,
+    'The real browser frame contains the fixture control');
+  await canvas.click({ position: { x: box.width * 0.5, y: box.height * (y / pixels.height) } });
+}
 try {
   await until(async () => { try { return (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) })).ok; } catch { return false; } }, 'Owned native WebView debug endpoint did not become ready');
   browser = await playwright.chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 20000 });
@@ -86,11 +94,10 @@ try {
   checks.actualBundledFirefoxLaunch = true; checks.liveFirefoxFrames = true;
 
   stage = 'live-manual-controls';
-  // The fixture's input and button occupy fixed portions of the real 1280x720 viewport.
-  const box = await canvas.boundingBox(); assert.ok(box && box.width > 0 && box.height > 0);
-  await canvas.click({ position: { x: box.width * 0.5, y: box.height * (250 / 720) } });
+  // Map fixed fixture content points through the actual streamed browser dimensions.
+  await clickFixturePoint(canvas, 250);
   await until(() => observed.clicked, 'Live workspace click did not reach the real Firefox page');
-  await canvas.click({ position: { x: box.width * 0.5, y: box.height * (40 / 720) } });
+  await clickFixturePoint(canvas, 40);
   await canvas.pressSequentially('GameBrowser local smoke', { delay: 60 });
   await until(() => observed.typed, 'Live workspace typing did not reach the real Firefox page');
   checks.liveManualClickAndTyping = true;
@@ -143,19 +150,26 @@ try {
     await page.locator('#following-apply').click();
     await until(async () => { const sync = await api('sync'); assert.equal(sync.error, null, 'Mixed following reports no error'); return sync.active && sync.adminId === adminId && sync.followerIds.length === 1 && sync.followerIds[0] === profileId; }, 'ChromiumAdmin and FirefoxFollower did not connect', 60000);
     await until(async () => (await adminTile.getAttribute('data-role')) === 'admin' && (await tile.getAttribute('data-role')) === 'follower', 'Native workspace did not render Admin/Follower roles');
-    assert.notEqual(await adminTile.evaluate(element => getComputedStyle(element).borderTopColor), await tile.evaluate(element => getComputedStyle(element).borderTopColor), 'Admin and follower borders have distinct colors');
+    const expectedRoleBorders = ['rgb(167, 139, 250)', 'rgb(45, 212, 191)'];
+    let roleBorders;
+    await until(async () => {
+      roleBorders = await Promise.all([adminTile.evaluate(element => getComputedStyle(element).borderTopColor), tile.evaluate(element => getComputedStyle(element).borderTopColor)]);
+      return roleBorders.every((color, index) => color === expectedRoleBorders[index]);
+    }, 'Installed Admin/Follower palette did not settle to the improved UI colors', 5000);
+    assert.notEqual(roleBorders[0], roleBorders[1], 'Admin and follower borders have distinct colors');
+    assert.deepEqual(roleBorders, expectedRoleBorders, 'Installed app uses the improved violet Admin and teal Follower UI');
     checks.distinctAdminFollowerBorders = true;
+    checks.improvedWorkspaceRolePalette = true;
     await adminTile.locator('.tile-heading-actions [data-action="browser"]').click();
     await adminTile.locator('canvas.manual-active').waitFor({ state: 'visible', timeout: 30000 });
     await until(() => adminTile.locator('.stream-message').evaluate(element => element.hidden), 'ChromiumAdmin did not render a healthy live frame');
   }
   async function mirroredInput(text) {
-    const target = adminTile.locator('canvas.manual-active'), bounds = await target.boundingBox();
-    assert.ok(bounds && bounds.width > 0 && bounds.height > 0);
+    const target = adminTile.locator('canvas.manual-active');
     const before = { firefox: observed.firefox.clicks, chromium: observed.chromium.clicks };
-    await target.click({ position: { x: bounds.width * 0.5, y: bounds.height * (250 / 720) } });
+    await clickFixturePoint(target, 250);
     await until(() => observed.firefox.clicks > before.firefox && observed.chromium.clicks > before.chromium, 'Real Admin click did not reach both Chromium and Firefox');
-    await target.click({ position: { x: bounds.width * 0.5, y: bounds.height * (40 / 720) } });
+    await clickFixturePoint(target, 40);
     await target.pressSequentially(text, { delay: 70 });
     await until(() => observed.firefox.value === text && observed.chromium.value === text, 'Real Admin typing did not reach the FirefoxFollower');
   }

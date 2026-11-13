@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "productVersion": "0.1.0-beta.79",
+  "productVersion": "0.1.0-beta.80",
   "openapi": {
     "path": "local-api.openapi.json",
-    "sha256": "8c20c31c7928330e651e5ae2351ab42cdc5f17a8449677cc5ece382199c29121"
+    "sha256": "9c80ab6d7d39f010dd23536ca8bf3ec3a3407d90db444c91596a8cb5fe457f02"
   },
   "mcpCatalogs": {
     "current-source": {
       "path": "mcp-tools/current-source.json",
-      "sha256": "d9ab43e0cb903bc8ff9d259cafa04cce75d5ee0dfb75f1281f2cf930389dc216"
+      "sha256": "0a438798d540067668f36274b31c6ba09cbcba170120483acda87406a0bfeb72"
     },
     "0.1.0-beta.42": {
       "path": "mcp-tools/0.1.0-beta.42.json",

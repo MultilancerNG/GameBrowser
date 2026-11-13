@@ -266,6 +266,8 @@ export interface LaunchInfo {
   /** Actual route selected for this launch; saved workspace edits wait for the next launch. */
   networkMode?: "direct" | "system" | "proxy";
   managedExtensions?: LaunchManagedExtensions;
+  /** Firefox's effective content geometry for this exact launch; never a portable identity. */
+  contentViewport?: import("./launch-viewport.ts").LaunchViewport;
   /** Search bootstrap attempted before this browser generation was spawned. */
   searchBootstrapRevision?: number;
   /** Linux-only ownership proof for a dedicated browser process group. */

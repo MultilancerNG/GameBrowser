@@ -25,7 +25,7 @@ Engine names, internal executable names (`aliasmode-sidecar`, `aliasmode-mcp`), 
 
 ## Live workspace and profiles
 
-The beta 79 source restores the original StakeMode Live workspace inside GameBrowser, with the current Cloud and MCP application retained. Beta 78 is the previous published installer and does not contain this workspace. The new installer is published only after the Windows release gate passes.
+The beta 80 source restores the original StakeMode Live workspace inside GameBrowser, with the current Cloud and MCP application retained. Beta 78 is the previous published installer and does not contain this workspace. The new installer is published only after the Windows release gate passes.
 
 Choose **GameBrowser Local** to run without an account, or use the compatible Cloud sign-in. A mode change can require an app restart. Once setup is ready, Live workspace opens by default. Use **Profiles** for the existing profile list and Cloud management, and **Settings & Cloud** for Team invitations, account/device settings and MCP. The Live workspace displays controllable Cloud profiles with current edit access; view-only entries remain available in Profiles.
 

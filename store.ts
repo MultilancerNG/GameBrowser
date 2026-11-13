@@ -12,6 +12,7 @@
 import { Database } from "bun:sqlite";
 import { folderTree } from "./folders.ts";
 import { normalizeLaunchManagedExtensions } from "./launch-managed-extensions.ts";
+import { validateLaunchViewport } from "./launch-viewport.ts";
 import type {
   CookieRecord,
   FingerprintVerdict,
@@ -137,6 +138,7 @@ export class ProfileStore {
       "persona_json TEXT",
       "network_mode TEXT",
       "managed_context_json TEXT",
+      "content_viewport_json TEXT",
     ]) {
       try {
         this.db.exec(`ALTER TABLE launches ADD COLUMN ${column}`);
@@ -1042,6 +1044,7 @@ export class ProfileStore {
   }
 
   recordLaunch(info: LaunchInfo): void {
+    const contentViewport = info.contentViewport === undefined ? undefined : validateLaunchViewport(info.contentViewport);
     const firefox = info as LaunchInfo & {
       engine?: "chromium" | "firefox";
       firefoxOwner?: unknown;
@@ -1053,9 +1056,9 @@ export class ProfileStore {
            (profile_id, pid, debug_port, ws, started_at, relay_port, session_base_version,
             binary_path, user_data_dir, binary_sha256, persona_digest, headless,
             search_bootstrap_revision, process_group_id, root_start_time,
-            engine, firefox_owner_json, owner_binary_path, persona_json, network_mode, managed_context_json)
+            engine, firefox_owner_json, owner_binary_path, persona_json, network_mode, managed_context_json, content_viewport_json)
          VALUES ($id,$pid,$port,$ws,$at,$relay,$base,$binary,$data,$binary_sha,$persona,$headless,$search_bootstrap,$pgid,$root_start,
-                 $engine,$firefox_owner,$owner_binary,$persona_json,$network_mode,$managed_context)
+                 $engine,$firefox_owner,$owner_binary,$persona_json,$network_mode,$managed_context,$content_viewport)
          ON CONFLICT(profile_id) DO UPDATE SET
            pid=$pid, debug_port=$port, ws=$ws, started_at=$at, relay_port=$relay,
            session_base_version=$base, binary_path=$binary, user_data_dir=$data,
@@ -1063,7 +1066,7 @@ export class ProfileStore {
            search_bootstrap_revision=$search_bootstrap,
            process_group_id=$pgid, root_start_time=$root_start,
            engine=$engine, firefox_owner_json=$firefox_owner, owner_binary_path=$owner_binary,
-           persona_json=$persona_json, network_mode=$network_mode, managed_context_json=$managed_context`,
+           persona_json=$persona_json, network_mode=$network_mode, managed_context_json=$managed_context, content_viewport_json=$content_viewport`,
       )
       .run({
         $id: info.profileId,
@@ -1087,6 +1090,7 @@ export class ProfileStore {
         $persona_json: info.persona ? JSON.stringify(info.persona) : null,
         $network_mode: info.networkMode ?? null,
         $managed_context: info.managedExtensions ? JSON.stringify(info.managedExtensions) : null,
+        $content_viewport: contentViewport ? JSON.stringify(contentViewport) : null,
       });
     // Mirror the launch time onto the profile so the AdsPower user/list facade
     // can report last_open_time (the launches row is deleted on stop).
@@ -1232,6 +1236,7 @@ function rowToLaunch(row: any): LaunchInfo {
   const engine = readStoredLaunchEngine(row.engine);
   const networkMode = readStoredLaunchNetworkMode(row.network_mode);
   const managedExtensions = readStoredLaunchManagedExtensions(row.managed_context_json);
+  const contentViewport = readStoredLaunchViewport(row.content_viewport_json);
   const firefoxOwner = readStoredFirefoxOwner(row.firefox_owner_json);
   return {
     profileId: row.profile_id,
@@ -1255,7 +1260,14 @@ function rowToLaunch(row: any): LaunchInfo {
     ...(row.persona_json ? { persona: JSON.parse(row.persona_json) } : {}),
     ...(networkMode ? { networkMode } : {}),
     ...(managedExtensions ? { managedExtensions } : {}),
+    ...(contentViewport ? { contentViewport } : {}),
   } as LaunchInfo;
+}
+
+function readStoredLaunchViewport(value: unknown): LaunchInfo["contentViewport"] {
+  if (value == null || value === "") return undefined;
+  if (typeof value !== "string" || value.length > 100) throw new Error("Invalid stored launch content viewport");
+  return validateLaunchViewport(JSON.parse(value));
 }
 
 function readStoredLaunchNetworkMode(value: unknown): LaunchInfo["networkMode"] {

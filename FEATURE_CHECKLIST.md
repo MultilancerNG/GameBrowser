@@ -1,6 +1,6 @@
 # GameBrowser — complete requested feature checklist
 
-Checked items have been verified in the named build or surface. **Windows beta 78 is the current published installer.** Beta 79 source now includes the restored Live workspace and improved UI, verified through rendered-browser and protocol checks. Its installed Windows release gate and publication are still pending.
+Checked items have been verified in the named build or surface. **Windows beta 78 is the current published installer.** Beta 80 source now includes the restored Live workspace and improved UI, verified through rendered-browser and protocol checks. Its installed Windows release gate and publication are still pending.
 
 ## Branding, Windows and delivery
 
@@ -56,7 +56,7 @@ Checked items have been verified in the named build or surface. **Windows beta 7
 
 These RAM values are soft targets, not a cap on total browser-process memory or a physical RAM reservation. Chromium's heap limit can be visible to websites. Mobile-sized presets change dimensions; they do not emulate a mobile OS or touch hardware.
 
-## Live workspace — implemented in beta 79 source; installed Windows gate pending
+## Live workspace — implemented in beta 80 source; installed Windows gate pending
 
 - [x] Make Live workspace prominent in GameBrowser and open it after the Local/Cloud setup flow.
 - [x] Restore live browser tiles with real frames, running state and per-profile controls.
@@ -99,6 +99,7 @@ Cloud creation, identity editing and sharing use the existing Profiles/Settings 
 - [x] Real Chromium following checks, including independent cookies and no replay after reconnect.
 - [x] Actual TXT/XLSX export→import checks preserve identity, credentials, cookies, localStorage and tabs.
 - [x] Beta 79 source regression: 2,363 passed, 11 skipped; focused follow-up native-bridge checks passed.
+- [x] Beta 80 source regression: 2,382 passed, 11 skipped; Firefox launch-geometry persistence, small viewports and existing-profile compatibility checked.
 - [x] Rendered desktop/mobile UI, actual source navigation, recoverable Trash and profile controls verified.
 - [x] Independent Local protocol acceptance: 11 real-browser checks, including exact-once following and saved session restore.
 - [x] Independent Cloud boundary acceptance: 7 checks with real browsers and a simulated service, including transient network recovery, revocation and account isolation.
