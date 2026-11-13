@@ -114,7 +114,7 @@ test("profile export reads split progress records and downloads the exact file b
     expect(request).toEqual({ ids: ["p1", "p2"], format: "xlsx", stream: true });
     expect(progress).toEqual([{ completed: 0, total: 2 }, { completed: 2, total: 2 }]);
     expect(new Uint8Array(await downloaded!.arrayBuffer())).toEqual(bytes);
-    expect(anchor.download).toBe("aliasmode-export.xlsx");
+    expect(anchor.download).toBe("gamebrowser-export.xlsx");
     expect(clicks).toBe(1);
   } finally {
     create.mockRestore();

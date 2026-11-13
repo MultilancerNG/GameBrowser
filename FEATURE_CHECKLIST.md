@@ -1,6 +1,6 @@
 # GameBrowser feature checklist
 
-This distinguishes implemented desktop code from live-service and release validation. Windows beta 76 is published; the newer mirroring/session changes below are being prepared for the next beta.
+This distinguishes implemented desktop code from live-service and release validation. Windows beta 76 is published. Beta 77 has passed its installed Windows smoke check and is publishing; the latest source is prepared as beta 78.
 
 ## Implemented and verified in source
 
@@ -24,20 +24,32 @@ This distinguishes implemented desktop code from live-service and release valida
 - [x] Published beta 76 passed a fresh Windows install/start/Local-mode/helper/shutdown/uninstall check.
 - [x] Installed Windows Local MCP initialization, tools/list, and agent discovery passed.
 - [x] Current dashboard layout and existing controls retained.
+- [x] Import supported TXT/CSV/JSON/XLSX profile exports or pasted account data.
+- [x] Discoverable export controls for one profile, selected profiles or the filtered view.
+- [x] TXT/XLSX identity and cookie exports; CSV account credentials, with Cloud edit checks.
 
-## Implemented for the next beta; release validation pending
+## Latest desktop source; Windows release validation pending
 
-- [x] Freeze sync assignments when a follower is clicked; require explicit Apply selection/Stop.
+- [x] Freeze sync assignments by default when a follower is clicked; explicit Apply selection/Stop.
+- [x] Optional Auto-follow Admin selection; automatically apply other selected profiles as followers.
+- [x] Auto-follow starts off and turns off on Stop or account/workspace changes.
 - [x] Save/forget/resume sync groups by authorized account without storing browser credentials.
 - [x] Retain groups while browsers are closed and reconnect future actions when profiles reopen.
-- [x] Full regression: 2,081 passed, 10 skipped; separate real Chromium mirroring tests passed.
-- [ ] Package and validate the next Windows beta with the new sync/session features.
+- [x] Full regression: 2,107 passed, 10 skipped; focused final UI/API/selection tests passed.
+- [x] Browser QA covers rapid Admin changes, pending Stop, Firefox followers and import/export roundtrips.
+- [x] Beta 77 full/slim installers built and installed Windows smoke passed.
+- [ ] Publish and validate beta 78 with all latest settings and automatic-follow controls.
 
-## Newly requested and pending
+## Browser settings implemented in beta 78 source
 
-- [ ] Automatic per-profile RAM budget in MB, with Auto/manual targets and clear enforcement scope.
-- [ ] Optional automatic memory optimization, preserving stored identity/session data.
-- [ ] Per-profile **Always show bookmarks bar** control, preserving existing browser UI behavior.
+- [x] Device-local resource policy API with Auto/manual RAM targets and Cloud edit authorization.
+- [x] Opt-in heap/cache optimization on new launches; existing browsers and identities retained.
+- [x] Bookmarks-bar engine preferences and preservation of existing bookmark folders.
+- [x] Browser settings controls verified in light/dark/mobile layouts, including persistence and errors.
+- [x] Saving settings leaves running browsers, following groups and unsaved profile edits intact.
+- [x] Auto allocation accounts for concurrent profile starts as well as running browsers.
+
+RAM settings are soft heap/cache targets, not total-process memory caps. They apply at the next fresh launch and are device-only.
 
 ## Requires external access or configuration
 

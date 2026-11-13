@@ -129,6 +129,39 @@ test("Firefox launches one saved persona and retains ownership across manager re
   expect(f.store.getLaunch(f.profile.id)).toBeNull();
 });
 
+test("Firefox resources change startup cache preferences without editing its saved persona", async () => {
+  const f = fixture();
+  let enabled = true;
+  let reads = 0;
+  const samples: number[] = [];
+  const launcher = new Launcher({
+    ...f.options,
+    resourcePolicy: () => { reads++; return { ramBudgetMb: 1536, autoOptimize: enabled, alwaysShowBookmarks: enabled }; },
+    memorySnapshot: (activeProfiles) => { samples.push(activeProfiles); return { totalMb: 8192, freeMb: 4096, activeProfiles }; },
+  });
+  const before = f.store.getProfile(f.profile.id);
+  await launcher.start(f.profile.id);
+  const first = f.store.getLaunch(f.profile.id)!;
+  expect(f.prefs()).toMatchObject({ "browser.cache.memory.capacity": 96 * 1024, "browser.toolbars.bookmarks.visibility": "always" });
+  expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL));
+  enabled = false;
+  expect((await launcher.start(f.profile.id)).reattached).toBe(true);
+  expect(reads).toBe(1);
+  expect(samples).toEqual([0]);
+  expect(f.launches()).toBe(1);
+  expect(f.prefs()).toMatchObject({ "browser.cache.memory.capacity": 96 * 1024, "browser.toolbars.bookmarks.visibility": "always" });
+  await launcher.stop(f.profile.id);
+  await launcher.start(f.profile.id);
+  expect(reads).toBe(2);
+  expect(samples).toEqual([0, 0]);
+  expect(f.prefs()).not.toHaveProperty("browser.cache.memory.capacity");
+  expect(f.prefs()).toMatchObject({ "browser.toolbars.bookmarks.visibility": "newtab" });
+  expect(f.store.getProfile(f.profile.id)).toEqual(before);
+  expect(f.store.getLaunch(f.profile.id)!.persona).toEqual(first.persona);
+  expect(f.store.getLaunch(f.profile.id)!.personaDigest).toBe(first.personaDigest);
+  await launcher.stop(f.profile.id);
+});
+
 test("Firefox sets cookies added while closed before its first page, and an edit while open waits for the next start", async () => {
   const f = fixture();
   const steps: string[] = [];

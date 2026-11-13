@@ -1,3 +1,5 @@
+import { ProfileResourceSettings } from "./profile-resources.tsx";
+import { ProfileExportDialog, type ProfileExportRequest } from "./profile-export.tsx";
 import { EMPTY_BROWSER_SYNC, followingSelection, sameFollowingSelection } from "./browser-following.ts";
 import { moveProfile, orderedProfileIds, selectionRanks } from "./profile-order.ts";
 import { VIEWPORT_PRESETS } from "./viewport-presets.ts";
@@ -1301,7 +1303,7 @@ function App() {
   const [teamEmail, setTeamEmail] = useState("");
   const inviteEmailRef = useRef<HTMLInputElement>(null);
   const [inviteAccessTarget, setInviteAccessTarget] = useState<typeof accessTarget>(null);
-  useEffect(() => { setInviteAccessTarget(null); setAccessTarget(null); }, [cloudAuth?.user?.id, cloudAuth?.workspace?.id]);
+  useEffect(() => { setInviteAccessTarget(null); setAccessTarget(null); setProfileExportRequest(null); }, [appMode?.mode, cloudAuth?.user?.id, cloudAuth?.workspace?.id]);
   const [teamRole, setTeamRole] = useState<"admin" | "member">("member");
   const [teamBusy, setTeamBusy] = useState(false);
   const [teamErr, setTeamErr] = useState<string | null>(null);
@@ -1346,6 +1348,9 @@ function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [browserSync, setBrowserSync] = useState<BrowserSyncState>(EMPTY_BROWSER_SYNC);
   const [saveFollowingSession, setSaveFollowingSession] = useState(false);
+  const [autoFollowSelection, setAutoFollowSelection] = useState(false);
+  const autoFollowAttempt = useRef("");
+  const autoFollowScope = useRef("");
   const [syncBusy, setSyncBusy] = useState(false);
   const syncBusyRef = useRef(false);
   const syncRevision = useRef(0);
@@ -1426,6 +1431,7 @@ function App() {
   const [updateOver, setUpdateOver] = useState(false);
   const updateFileRef = useRef<HTMLInputElement>(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [profileExportRequest, setProfileExportRequest] = useState<ProfileExportRequest | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState("");
   const [addingGroup, setAddingGroup] = useState(false);
@@ -1509,6 +1515,7 @@ function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (profileExportRequest) { if (!exportProgress) setProfileExportRequest(null); return; }
       if (accessTarget) { if (!teamBusy) setAccessTarget(null); return; }
       if (movingFolder) { if (!folderMoveBusy) setMovingFolder(null); return; }
       if (pendingMode) { if (!modeBusy) setPendingMode(null); return; }
@@ -2354,7 +2361,7 @@ function App() {
     return [...selected].reverse().find((id) => available.has(id));
   }, [profiles, selected]);
 
-  const syncSelection = useMemo(() => followingSelection(profiles, selected, isCloudMode), [profiles, selected, isCloudMode]);
+  const syncSelection = useMemo(() => followingSelection(profiles, selected, isCloudMode, autoFollowSelection), [profiles, selected, isCloudMode, autoFollowSelection]);
   const rosterLoadedRef = useRef(loaded);
   rosterLoadedRef.current = loaded;
   const hasSyncGroup = browserSync.adminId !== null;
@@ -2367,6 +2374,9 @@ function App() {
     const initialRevision = syncRevision.current;
     syncBusyRef.current = false;
     setSyncBusy(false);
+    setAutoFollowSelection(false);
+    autoFollowAttempt.current = "";
+    autoFollowScope.current = "";
     setBrowserSync(EMPTY_BROWSER_SYNC);
     if (!workspaceReady || appMode?.legacyRemote || restartRequired) return;
     const poll = async () => {
@@ -2410,6 +2420,23 @@ function App() {
     } finally {
       if (revision === syncRevision.current && generation === authGeneration.current) { syncBusyRef.current = false; setSyncBusy(false); }
     }
+  };
+
+  const automaticSelectionKey = JSON.stringify(syncSelection);
+  const followingScope = isCloudMode ? `cloud:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}` : "local";
+  useEffect(() => {
+    if (!autoFollowSelection || autoFollowScope.current !== followingScope || !workspaceReady || !loaded || appMode?.legacyRemote || syncSelection.issue || !syncSelection.adminId) return;
+    if (!syncBusyRef.current && sameFollowingSelection({ ...browserSync, active: true }, syncSelection.adminId, syncSelection.followerIds)) return;
+    if (autoFollowAttempt.current === automaticSelectionKey) return;
+    autoFollowAttempt.current = automaticSelectionKey;
+    void followingCommand(() => startBrowserSync(syncSelection.adminId!, syncSelection.followerIds, hasSyncGroup ? browserSync.saved : saveFollowingSession));
+    // A failed attempt is shown for explicit retry; polling never retries actions.
+  }, [autoFollowSelection, automaticSelectionKey, workspaceReady, loaded, appMode?.legacyRemote, followingScope]);
+
+  const stopFollowingSession = () => {
+    setAutoFollowSelection(false);
+    autoFollowAttempt.current = "";
+    void followingCommand(stopBrowserSync);
   };
 
   const sortField = (p: UiProfile, key: SortKey): string | number => {
@@ -3285,21 +3312,25 @@ function App() {
     else flash(`Converted ${ids.length} mobile persona(s) to stable desktop personas`);
   };
 
-  // ---- Export selected → file ----
-  const exportSelected = async (format: ExportFormat) => {
-    setExportOpen(false);
-    if (!selected.size || exportProgress) return;
-    const ids = [...selected];
+  // Export never changes selection or the active following group.
+  const openProfileExport = (singleId?: string) => {
+    setProfileExportRequest({ selectedIds: [...selected], viewIds: filtered.map((profile) => profile.id), ...(singleId ? { singleId } : {}) });
+  };
+  const exportByIds = async (ids: string[], format: ExportFormat) => {
+    if (!ids.length || exportProgress) return;
     setActionErr(null);
     setExportProgress({ completed: 0, total: ids.length });
     try {
       await exportProfiles(ids, format, (progress) => setExportProgress(progress));
       flash(`Exported ${ids.length.toLocaleString()} profile${ids.length === 1 ? "" : "s"} as ${format.toUpperCase()}`);
-    } catch (e) {
-      setActionErr(String(e));
-    } finally {
-      setExportProgress(null);
-    }
+    } catch (error) {
+      setActionErr(String(error));
+      throw error;
+    } finally { setExportProgress(null); }
+  };
+  const exportSelected = async (format: ExportFormat) => {
+    setExportOpen(false);
+    try { await exportByIds([...selected], format); } catch { /* error is shown above the roster */ }
   };
 
   // ---- Transient success banner ----
@@ -3659,6 +3690,7 @@ function App() {
             title={t("Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports")}
             onClick={openBulk}
           ><Icon name="fileImport" /><span className="navlabel">{t("Import profiles")}</span></button>
+          <button type="button" className="btn importbtn tip" aria-label="Export profiles" data-tip="Export profiles" title="Export selected profiles or the current view" disabled={!profiles.length || !!exportProgress} onClick={() => openProfileExport()}><Icon name="export" /><span className="navlabel">Export profiles</span></button>
         </div>
 
         <nav className="sidenav" aria-label={t("Sections")}>
@@ -4053,24 +4085,34 @@ function App() {
         {!appMode?.legacyRemote && (selected.size >= 2 || hasSyncGroup || browserSync.saved || syncBusy) && <section className="workspace-following" aria-label="Browser following">
           <div>
             <strong>{syncBusy || browserSync.starting ? "Connecting followers…" : browserSync.waiting ? "Session waiting for browsers to reopen" : browserSync.active ? "Followers are following Admin" : hasSyncGroup ? "Session needs attention" : browserSync.saved ? "Saved sync session" : "Browser following"}</strong>
-            {hasSyncGroup && <p>Admin: {profiles.find((profile) => profile.id === browserSync.adminId)?.name ?? browserSync.adminId} · {browserSync.followerIds.length} follower(s). Clicking a follower does not change this session.</p>}
-            <p>{hasSyncGroup ? "Use Apply selection to change assignments, or Stop following to end this group." : syncSelection.issue ?? "Mirror clicks, typing, navigation and scrolling. Each profile keeps its own cookies and identity."}</p>
+            {hasSyncGroup && <p>Admin: {profiles.find((profile) => profile.id === browserSync.adminId)?.name ?? browserSync.adminId} · {browserSync.followerIds.length} follower(s). {autoFollowSelection ? "Selection changes automatically update assignments." : "Clicking a follower does not change this session."}</p>}
+            <p>{hasSyncGroup ? autoFollowSelection ? "Automatic mode: the latest selected Chromium profile becomes Admin; other selected profiles follow." : "Use Apply selection to change assignments, or Stop following to end this group." : syncSelection.issue ?? "Mirror clicks, typing, navigation and scrolling. Each profile keeps its own cookies and identity."}</p>
             {hasSyncGroup && syncSelection.issue && <p>Selection: {syncSelection.issue}</p>}
             {browserSync.waiting && <p>Assignments are retained. No actions are sent while required browsers are closed.</p>}
             {browserSync.failedFollowerIds.length > 0 && <p role="alert">{browserSync.failedFollowerIds.length} follower(s) missed an action. Retry only when ready; past actions are not replayed.</p>}
             {browserSync.error && <p className="modal-err" role="alert">{browserSync.error}</p>}
           </div>
           <div className="following-controls">
+            {selected.size >= 2 && <label className="following-save">Admin profile
+              <select aria-label="Admin profile" value={profiles.find((profile) => profile.id === syncSelection.adminId)?.engine === "chromium" ? syncSelection.adminId ?? "" : ""} onChange={(event) => {
+                const id = event.target.value;
+                if (id) setSelected((current) => current.has(id) ? new Set([...current].filter((selectedId) => selectedId !== id).concat(id)) : current);
+              }}>
+                <option value="" disabled>Choose a Chromium Admin</option>
+                {profiles.filter((profile) => selected.has(profile.id) && profile.engine === "chromium").map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+              </select>
+            </label>}
+            <label className="following-save"><input type="checkbox" checked={autoFollowSelection} onChange={(event) => { autoFollowAttempt.current = ""; autoFollowScope.current = followingScope; setAutoFollowSelection(event.target.checked); }} />Auto-follow Admin selection</label>
             {!hasSyncGroup && <>
               <label className="following-save"><input type="checkbox" checked={saveFollowingSession} onChange={(event) => setSaveFollowingSession(event.target.checked)} />Save session for later</label>
               <button type="button" className="btn primary" disabled={syncBusy || !!syncSelection.issue} onClick={() => { if (syncSelection.adminId) void followingCommand(() => startBrowserSync(syncSelection.adminId!, syncSelection.followerIds, saveFollowingSession)); }}>Start following</button>
-              {syncBusy && <button type="button" className="btn solid-danger" onClick={() => void followingCommand(stopBrowserSync)}>Stop following</button>}
+              {syncBusy && <button type="button" className="btn solid-danger" onClick={stopFollowingSession}>Stop following</button>}
               {browserSync.saved && <button type="button" className="btn" disabled={syncBusy} onClick={() => void followingCommand(resumeBrowserSync, true)}>Resume saved session</button>}
             </>}
             {hasSyncGroup && <>
               <button type="button" className="btn" disabled={syncBusy || !!syncSelection.issue || (sameFollowingSelection({ ...browserSync, active: true }, syncSelection.adminId, syncSelection.followerIds))} onClick={() => { if (syncSelection.adminId) void followingCommand(() => startBrowserSync(syncSelection.adminId!, syncSelection.followerIds, browserSync.saved)); }}>Apply selection</button>
               {!browserSync.active && !browserSync.starting && !browserSync.waiting && <button type="button" className="btn primary" disabled={syncBusy} onClick={() => void followingCommand(() => startBrowserSync(browserSync.adminId!, browserSync.followerIds, browserSync.saved))}>Retry following</button>}
-              <button type="button" className="btn solid-danger" onClick={() => void followingCommand(stopBrowserSync)}>Stop following</button>
+              <button type="button" className="btn solid-danger" onClick={stopFollowingSession}>Stop following</button>
             </>}
             {(hasSyncGroup || browserSync.saved) && <button type="button" className="btn ghost" disabled={syncBusy} onClick={() => void followingCommand(() => saveBrowserSyncSession(!browserSync.saved))}>{browserSync.saved ? "Forget saved session" : "Save session"}</button>}
           </div>
@@ -5368,6 +5410,11 @@ function App() {
                     onUndo={() => setEditForm((form) => ({ ...form, ...editInitialFingerprint }))}
                     hardware={editHardware}
                   />}
+                  {!appMode?.legacyRemote && <ProfileResourceSettings
+                    key={`${followingScope}:${editId}`}
+                    profileId={editId}
+                    disabled={editSaving || timezoneBusy || (isCloudMode && profiles.find((profile) => profile.id === editId)?.permission !== "edit")}
+                  />}
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
                       <span>{t("Extensions")}</span>
@@ -5388,7 +5435,8 @@ function App() {
                 </>
               )}
             </div>
-            <div className="modal-foot">
+            <div className="modal-foot profile-edit-foot">
+              <button type="button" className="btn ghost" disabled={editLoading || !!exportProgress} onClick={() => { if (editId) openProfileExport(editId); }}>Export saved profile</button>
               <button className="btn ghost" onClick={closeEdit}>{t("Cancel")}</button>
               <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? t("Saving…") : t("Save changes")}</button>
             </div>
@@ -5396,12 +5444,14 @@ function App() {
         </div>
       )}
 
+      {profileExportRequest && <ProfileExportDialog request={profileExportRequest} profiles={profiles} cloud={isCloudMode} progress={exportProgress} onExport={exportByIds} onClose={() => setProfileExportRequest(null)} />}
+
       {showBulk && (
         /* Form dialog: a stray backdrop click must not discard typed input —
            close via Cancel, the X, or Escape (the backdrop has no onClick). */
         <div className="modal-backdrop">
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="profile-import-title" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head" id="profile-import-title">
               <Icon name="fileImport" />Import profiles
               <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeBulk}><Icon name="close" className="sm" /></button>
             </div>

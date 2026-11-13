@@ -395,6 +395,7 @@ function makeLauncher(
   autofill.listen();
   return new Launcher({
     store,
+    resourcePolicy: (profileId) => store.getProfileResourcePolicy(profileId),
     autofill,
     dataRoot: defaultDataRoot,
     ...(chromiumRuntimeRoot ? { chromiumRuntimeRoot } : {}),

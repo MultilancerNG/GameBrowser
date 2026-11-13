@@ -22,6 +22,15 @@ test("following cannot start with missing, closed, locked, read-only, or unsuppo
   expect(followingSelection(profiles, new Set(["first", "firefox"]), false).issue).toContain("Chromium Admin");
 });
 
+test("automatic Admin choice retains Firefox followers and chooses the newest Chromium selection", () => {
+  expect(followingSelection(profiles, new Set(["first", "second", "firefox"]), true, true))
+    .toEqual({ adminId: "second", followerIds: ["firefox", "first"], issue: null });
+  expect(followingSelection(profiles, new Set(["second", "firefox", "first"]), false, true))
+    .toEqual({ adminId: "first", followerIds: ["firefox", "second"], issue: null });
+  expect(followingSelection(profiles, new Set(["firefox"]), false, true).issue).toContain("at least one");
+  expect(followingSelection(profiles, new Set(["first", "missing"]), false, true).issue).toContain("Open every");
+});
+
 test("a changed Admin or follower set requires reconfiguration, but follower ordering alone does not", () => {
   const state = { ...EMPTY_BROWSER_SYNC, active: true, adminId: "first", followerIds: ["second", "firefox"] };
   expect(sameFollowingSelection(state, "first", ["firefox", "second"])).toBe(true);

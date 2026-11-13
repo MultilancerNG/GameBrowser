@@ -1138,6 +1138,11 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .modal-foot > .btn:first-child { margin-left: auto; }
 .modal-foot .tlink + .tlink { margin-left: 6px; }
 .modal-foot .spacer { flex: 1; }
+@media (max-width: 480px) {
+  .profile-edit-foot { flex-wrap: wrap; justify-content: flex-end; }
+  .profile-edit-foot > .btn { flex-shrink: 0; }
+  .profile-edit-foot > .btn:first-child { flex-basis: 100%; margin-left: 0; }
+}
 
 .fld { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .fld > span {
@@ -1775,3 +1780,4 @@ html[data-theme="dark"] .profile-table tbody tr.profile-follower td.col-action {
 @media (max-width: 700px) { .workspace-following { align-items: flex-start; flex-direction: column; gap: 10px; } }
 .following-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; max-width: 490px; }
 .following-save { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.following-save select { max-width: 220px; }

@@ -636,8 +636,9 @@ test("selection controls expose scope selection and clearing without changing ex
 
 test("export shows live progress, blocks duplicate exports, and always clears busy state", async () => {
   const source = app
-    .slice(app.indexOf("const exportSelected = async"), app.indexOf("// ---- Transient success banner"))
-    .replace("(format: ExportFormat)", "(format)"); // strip the one TS annotation for plain-JS evaluation
+    .slice(app.indexOf("const exportByIds = async"), app.indexOf("// ---- Transient success banner"))
+    .replace("(ids: string[], format: ExportFormat)", "(ids, format)")
+    .replace("(format: ExportFormat)", "(format)"); // evaluate both shared and selection export paths
   expect(source).toContain("exportProfiles(ids, format, (progress) => setExportProgress(progress))");
   const makeExportSelected = new Function(
     "selected", "exportProgress", "exportProfiles", "setExportOpen", "setActionErr", "setExportProgress", "flash",

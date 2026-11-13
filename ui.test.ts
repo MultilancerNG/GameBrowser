@@ -58,6 +58,101 @@ function firefoxProfile(s: ProfileStore, id: string): Profile {
   };
 }
 
+test("device resource settings are opt-in, persistent, redacted, and leave profile/session identity intact", async () => {
+  const s = store();
+  const before = structuredClone(s.getProfile("k1d0cd11")!);
+  const portableBefore = encodePortableProfile(before);
+  const request = (method = "GET", body?: unknown) => handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/resources", {
+    method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+  }), {} as any, s);
+  try {
+    const initial = await request();
+    const defaults = await initial!.json();
+    expect(initial!.headers.get("cache-control")).toContain("no-store");
+    expect(defaults.policy).toEqual({ ramBudgetMb: null, autoOptimize: false });
+    expect(defaults.allocation.mode).toBe("auto");
+    expect(defaults.allocation.budgetMb).toBeGreaterThanOrEqual(512);
+    expect(defaults.allocation.budgetMb).toBeLessThanOrEqual(2048);
+    expect(defaults.system.totalMb).toBeGreaterThan(0);
+    expect(defaults.appliesNextLaunch).toBe(true);
+
+    s.recordLaunch({ profileId: "k1d0cd11", pid: 1, debugPort: 9222, ws: "ws://127.0.0.1:9222/secret-endpoint", startedAt: 1 } as any);
+    const response = await request("POST", { ramBudgetMb: 1024, autoOptimize: true });
+    const saved = await response!.json();
+    expect(saved.policy).toEqual({ ramBudgetMb: 1024, autoOptimize: true });
+    expect(saved.allocation).toEqual({ mode: "manual", budgetMb: 1024, jsHeapMb: 512, memoryCacheKb: 65536, lowMemory: expect.any(Boolean), optimized: true });
+    expect(saved.system.activeProfiles).toBe(0); // Existing self is counted once, as the next launch.
+    expect(s.getLaunch("k1d0cd11")).not.toBeNull();
+    expect(s.getProfile("k1d0cd11")).toEqual(before);
+    expect(encodePortableProfile(s.getProfile("k1d0cd11")!)).toEqual(portableBefore);
+    for (const secret of ["SECRETpw", "COOKIEVAL", "PROXYPASS", "secret-endpoint"]) expect(JSON.stringify(saved)).not.toContain(secret);
+
+    expect((await (await request("POST", { ramBudgetMb: null, autoOptimize: true, alwaysShowBookmarks: false }))!.json()).policy.alwaysShowBookmarks).toBe(false);
+    expect((await (await request("POST", { ramBudgetMb: 768, autoOptimize: false }))!.json()).policy).toEqual({ ramBudgetMb: 768, autoOptimize: false, alwaysShowBookmarks: false });
+    expect((await (await request())!.json()).policy).toEqual({ ramBudgetMb: 768, autoOptimize: false, alwaysShowBookmarks: false });
+  } finally { s.close(); }
+});
+
+test("resource API rejects invalid settings and untrusted mutations without changing saved policy", async () => {
+  const s = store();
+  try {
+    for (const body of [null, {}, [], { ramBudgetMb: "1024", autoOptimize: true }, { ramBudgetMb: 1024.5, autoOptimize: true },
+      { ramBudgetMb: 0, autoOptimize: true }, { ramBudgetMb: 32769, autoOptimize: true }, { ramBudgetMb: 1024, autoOptimize: "true" },
+      { ramBudgetMb: null, autoOptimize: true, alwaysShowBookmarks: null }, { ramBudgetMb: null, autoOptimize: false, ws: "ws://evil" }]) {
+      const response = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/resources", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      }), {} as any, s);
+      expect(response!.status).toBe(400);
+    }
+    const invalidJson = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/resources", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{",
+    }), {} as any, s);
+    expect(invalidJson!.status).toBe(400);
+    const crossOrigin = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/resources", {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://other" }, body: '{"ramBudgetMb":1024,"autoOptimize":true}',
+    }), {} as any, s);
+    expect(crossOrigin!.status).toBe(403);
+    const wrongContentType = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/resources", { method: "POST", body: "{}" }), {} as any, s);
+    expect(wrongContentType!.status).toBe(415);
+    expect((await handleUiRequest(new Request("http://x/ui/api/profiles/missing/resources"), {} as any, s))!.status).toBe(404);
+    expect((await handleUiRequest(new Request("http://x/ui/api/profiles/a%2Fb/resources"), {} as any, s))!.status).toBe(400);
+    expect((await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/resources", { method: "DELETE" }), {} as any, s))!.status).toBe(405);
+    expect((await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/resources"), {} as any, s, {} as any))!.status).toBe(400);
+    expect(s.getProfileResourcePolicy("k1d0cd11")).toEqual({ ramBudgetMb: null, autoOptimize: false });
+  } finally { s.close(); }
+});
+
+test("Cloud resources require current edit access, work for uncached closed profiles, and never use local fallback", async () => {
+  const s = store();
+  let permission = "edit";
+  let unavailable = false;
+  let rosterReads = 0;
+  const options = { runtimeMode: "cloud" as const, cloudBrowser: { async listRoster() {
+    rosterReads++;
+    if (unavailable) throw new CloudApiError("unavailable", "authentication_required", 401);
+    return { profiles: [{ id: "cloud-closed", running: false, permission }], healthSources: [] };
+  } } as any };
+  const request = (id: string, method = "GET", body?: unknown) => handleUiRequest(new Request(`http://x/ui/api/profiles/${id}/resources`, {
+    method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+  }), {} as any, s, null, options);
+  try {
+    expect(s.getProfile("cloud-closed")).toBeNull();
+    expect((await request("cloud-closed"))!.status).toBe(200);
+    expect((await request("cloud-closed", "POST", { ramBudgetMb: 768, autoOptimize: true }))!.status).toBe(200);
+    expect(s.getProfileResourcePolicy("cloud-closed")).toEqual({ ramBudgetMb: 768, autoOptimize: true });
+    expect(s.getProfile("cloud-closed")).toBeNull();
+    expect((await request("k1d0cd11"))!.status).toBe(404); // Cached Local row grants no Cloud access.
+    permission = "view";
+    expect((await request("cloud-closed", "POST", { ramBudgetMb: 1024, autoOptimize: false }))!.status).toBe(403);
+    permission = "edit";
+    unavailable = true;
+    expect((await request("cloud-closed", "POST", { ramBudgetMb: 1024, autoOptimize: false }))!.status).toBe(401);
+    expect(s.getProfileResourcePolicy("cloud-closed")).toEqual({ ramBudgetMb: 768, autoOptimize: true });
+    expect(rosterReads).toBe(5);
+    expect((await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/resources"), {} as any, s, null, { runtimeMode: "cloud" }))!.status).toBe(503);
+  } finally { s.close(); }
+});
+
 /** One exit lookup asks GeoJS (MaxMind's data) and ip-api.com at once. */
 const EXIT_LOOKUP_CALLS = [["https://get.geojs.io/v1/ip/geo.json"], ["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]];
 
@@ -2348,7 +2443,7 @@ test("export in remote mode pulls every selected profile from the hub, not the l
     remote,
   );
   expect(res!.status).toBe(200);
-  expect(res!.headers.get("content-disposition")).toContain("aliasmode-export.csv");
+  expect(res!.headers.get("content-disposition")).toContain("gamebrowser-export.csv");
   const text = await res!.text();
   expect(fetched).toEqual(["hub0001", "hub0002"]); // resolved against the hub, not the local store
   const rows = text.trim().split("\n");
@@ -2711,7 +2806,7 @@ test("export as xlsx returns a workbook carrying the full identity", async () =>
     null as any,
   );
   expect(res!.status).toBe(200);
-  expect(res!.headers.get("content-disposition")).toContain("aliasmode-export.xlsx");
+  expect(res!.headers.get("content-disposition")).toContain("gamebrowser-export.xlsx");
   expect(res!.headers.get("content-type")).toContain("spreadsheetml.sheet");
 
   const rows = await readXlsx(new Uint8Array(await res!.arrayBuffer()));

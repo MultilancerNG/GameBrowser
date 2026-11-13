@@ -27,6 +27,7 @@ import { normalizeProxySpec } from "./proxy.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { assertValidProfile } from "./profile-validation.ts";
 import { mergeCookies } from "./parse.ts";
+import { DEFAULT_PROFILE_RESOURCE_POLICY, parseProfileResourcePolicy, type ProfileResourcePolicy } from "./profile-resources.ts";
 
 export class ProfileStore {
   private db: Database;
@@ -79,6 +80,7 @@ export class ProfileStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS profiles_fingerprint_seed ON profiles(fingerprint_seed)");
     this.db.exec("CREATE TABLE IF NOT EXISTS profile_orders (scope TEXT PRIMARY KEY, ids_json TEXT NOT NULL)");
     this.db.exec("CREATE TABLE IF NOT EXISTS browser_sync_plans (scope TEXT PRIMARY KEY, admin_id TEXT NOT NULL, follower_ids_json TEXT NOT NULL)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS profile_resource_policies (profile_id TEXT PRIMARY KEY, policy_json TEXT NOT NULL)");
     // Cookies added while the profile was closed. The next launch sets them, then clears them.
     try {
       this.db.exec(`ALTER TABLE profiles ADD COLUMN pending_cookies_json TEXT NOT NULL DEFAULT '[]'`);
@@ -506,6 +508,23 @@ export class ProfileStore {
   /** Include Trash: restoring a profile must not reuse a new profile's identity. */
   hasFingerprintSeed(seed: number): boolean {
     return !!this.db.query("SELECT 1 FROM profiles WHERE fingerprint_seed = ? LIMIT 1").get(seed);
+  }
+
+  /** Device-local performance preferences deliberately stay outside the portable profile identity. */
+  getProfileResourcePolicy(profileId: string): ProfileResourcePolicy {
+    assertSafeProfileId(profileId);
+    const row = this.db.query<{ policy_json: string }, [string]>("SELECT policy_json FROM profile_resource_policies WHERE profile_id = ?").get(profileId);
+    if (row) {
+      try { return parseProfileResourcePolicy(JSON.parse(row.policy_json)); } catch { /* Corrupt preferences must not change the browser's identity or prevent safe startup. */ }
+    }
+    return { ...DEFAULT_PROFILE_RESOURCE_POLICY };
+  }
+
+  setProfileResourcePolicy(profileId: string, policy: ProfileResourcePolicy): void {
+    assertSafeProfileId(profileId);
+    const normalized = parseProfileResourcePolicy(policy);
+    this.db.query("INSERT INTO profile_resource_policies (profile_id, policy_json) VALUES (?, ?) ON CONFLICT(profile_id) DO UPDATE SET policy_json=excluded.policy_json")
+      .run(profileId, JSON.stringify(normalized));
   }
 
   getProfileOrder(scope: string): string[] {

@@ -6,8 +6,13 @@ export const EMPTY_BROWSER_SYNC: BrowserSyncState = {
 
 type FollowingProfile = Pick<UiProfile, "id" | "engine" | "running" | "lockedBy" | "permission">;
 
-export function followingSelection(profiles: readonly FollowingProfile[], selected: ReadonlySet<string>, cloud: boolean) {
+export function followingSelection(profiles: readonly FollowingProfile[], selected: ReadonlySet<string>, cloud: boolean, automatic = false) {
   const ids = [...selected].reverse();
+  // Adding a Firefox follower in automatic mode must retain a Chromium Admin.
+  if (automatic) {
+    const index = ids.findIndex((id) => profiles.find((profile) => profile.id === id)?.engine === "chromium");
+    if (index > 0) ids.unshift(...ids.splice(index, 1));
+  }
   const adminId = ids[0] ?? null;
   const followerIds = ids.slice(1);
   const byId = new Map(profiles.map((profile) => [profile.id, profile]));

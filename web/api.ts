@@ -21,6 +21,68 @@ import {
 export type { CloudDiagnosticEvent } from "../cloud-diagnostics.ts";
 export type { RuntimeDownload } from "../runtime-download.ts";
 
+/** Device preferences; deliberately separate from portable profile identity. */
+export interface ProfileResourcePolicy {
+  ramBudgetMb: number | null;
+  autoOptimize: boolean;
+  alwaysShowBookmarks?: boolean;
+}
+
+export interface ProfileResourcesState {
+  policy: ProfileResourcePolicy;
+  allocation: {
+    mode: "auto" | "manual";
+    budgetMb: number;
+    jsHeapMb: number;
+    memoryCacheKb: number;
+    lowMemory: boolean;
+    optimized: boolean;
+    alwaysShowBookmarks?: boolean;
+  };
+  system: { totalMb: number; freeMb: number; activeProfiles: number };
+  appliesNextLaunch: true;
+}
+
+async function profileResourcesRequest(profileId: string, init: RequestInit): Promise<ProfileResourcesState> {
+  const path = `/ui/api/profiles/${encodeURIComponent(profileId)}/resources`;
+  const response = await fetch(path, init);
+  const body = await apiJson(response, path);
+  if (!response.ok || body?.ok !== true) throw new Error(typeof body?.error === "string" ? body.error : "Browser settings are unavailable");
+  const { policy, allocation, system } = body;
+  const integer = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): value is number =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= min && value <= max;
+  const bookmarks = (value: unknown) => value === undefined || typeof value === "boolean";
+  if (!policy || (policy.ramBudgetMb !== null && !integer(policy.ramBudgetMb, 128, 32768)) ||
+    typeof policy.autoOptimize !== "boolean" || !bookmarks(policy.alwaysShowBookmarks) ||
+    !allocation || (allocation.mode !== "auto" && allocation.mode !== "manual") ||
+    !integer(allocation.budgetMb, 128, 32768) || !integer(allocation.jsHeapMb, 128, 2048) ||
+    !integer(allocation.memoryCacheKb, 16384, 131072) || typeof allocation.lowMemory !== "boolean" ||
+    typeof allocation.optimized !== "boolean" || !bookmarks(allocation.alwaysShowBookmarks) ||
+    !system || !integer(system.totalMb, 1) || !integer(system.freeMb, 0, system.totalMb) ||
+    !integer(system.activeProfiles, 0) || body.appliesNextLaunch !== true) throw new Error("Browser settings returned invalid data");
+  return {
+    policy: { ramBudgetMb: policy.ramBudgetMb, autoOptimize: policy.autoOptimize,
+      ...(policy.alwaysShowBookmarks === undefined ? {} : { alwaysShowBookmarks: policy.alwaysShowBookmarks }) },
+    allocation: { mode: allocation.mode, budgetMb: allocation.budgetMb, jsHeapMb: allocation.jsHeapMb,
+      memoryCacheKb: allocation.memoryCacheKb, lowMemory: allocation.lowMemory, optimized: allocation.optimized,
+      ...(allocation.alwaysShowBookmarks === undefined ? {} : { alwaysShowBookmarks: allocation.alwaysShowBookmarks }) },
+    system: { totalMb: system.totalMb, freeMb: system.freeMb, activeProfiles: system.activeProfiles },
+    appliesNextLaunch: true,
+  };
+}
+
+export function fetchProfileResources(profileId: string, signal?: AbortSignal): Promise<ProfileResourcesState> {
+  return profileResourcesRequest(profileId, { signal, cache: "no-store" });
+}
+
+export function saveProfileResources(profileId: string, policy: ProfileResourcePolicy, signal?: AbortSignal): Promise<ProfileResourcesState> {
+  return profileResourcesRequest(profileId, {
+    method: "POST", headers: { "Content-Type": "application/json" }, signal,
+    body: JSON.stringify({ ramBudgetMb: policy.ramBudgetMb, autoOptimize: policy.autoOptimize,
+      ...(policy.alwaysShowBookmarks === undefined ? {} : { alwaysShowBookmarks: policy.alwaysShowBookmarks }) }),
+  });
+}
+
 export interface BrowserSyncState {
   active: boolean;
   starting: boolean;
@@ -996,7 +1058,7 @@ export async function exportProfiles(
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `aliasmode-export.${format}`;
+  a.download = `gamebrowser-export.${format}`;
   document.body.appendChild(a);
   a.click();
   a.remove();

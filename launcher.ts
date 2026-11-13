@@ -35,6 +35,10 @@ import { dlopen, ptr } from "bun:ffi";
 import type { CookieRecord, LaunchInfo, LaunchPersona, Profile, ProxySpec } from "./types.ts";
 import { cookiesForEngine } from "./parse.ts";
 import type { ProfileStore } from "./store.ts";
+import {
+  DEFAULT_PROFILE_RESOURCE_POLICY, resolveProfileResources, resourceMemorySnapshot,
+  type ProfileResourcePolicy, type ResourceMemorySnapshot,
+} from "./profile-resources.ts";
 import { lookupProxyExitLocation, type ExitLocation } from "./geoip.ts";
 import type { AutofillBridge } from "./autofill-bridge.ts";
 import { AUTOFILL_EXTENSION_REVISION, autofillExtensionDir } from "./autofill-extension.ts";
@@ -518,6 +522,10 @@ export function platformHomeUrl(platform: string | undefined, telegramClient: "a
 
 export interface LauncherOptions {
   store: ProfileStore;
+  /** Device-local resources, sampled once for a fresh launch; never part of a profile's persona. */
+  resourcePolicy?: (profileId: string) => ProfileResourcePolicy;
+  /** Injectable host memory sample. activeProfiles excludes the browser about to launch. */
+  memorySnapshot?: (activeProfiles: number) => ResourceMemorySnapshot;
   autofill?: AutofillBridge;
   /** Path to the CloakBrowser binary. Defaults to $CLOAKBROWSER_BINARY_PATH. */
   binaryPath?: string;
@@ -901,6 +909,8 @@ const RESETTABLE_SESSION_STORES = [
 
 export class Launcher {
   private store: ProfileStore;
+  private resourcePolicy?: LauncherOptions["resourcePolicy"];
+  private memorySnapshot: NonNullable<LauncherOptions["memorySnapshot"]>;
   private autofill?: AutofillBridge;
   private dpapiKeysReadable: (keys: string[]) => Promise<boolean[] | null>;
   /** DPAPI answers per encrypted cookie key, so reopening a profile does not respawn PowerShell. */
@@ -1015,6 +1025,8 @@ export class Launcher {
 
   constructor(opts: LauncherOptions) {
     this.store = opts.store;
+    this.resourcePolicy = opts.resourcePolicy;
+    this.memorySnapshot = opts.memorySnapshot ?? resourceMemorySnapshot;
     this.dpapiKeysReadable = opts.dpapiKeysReadable ?? ((keys) => dpapiKeysReadable(keys, 15_000));
     this.autofill = opts.autofill;
     this.binaryPath = opts.binaryPath ?? defaultBinaryPath();
@@ -1442,9 +1454,13 @@ export class Launcher {
     restoreLastSession = false,
     webRtcIp?: string,
     keepAlive = false,
+    resources = this.resolveResources(profile.id),
   ): string[] {
     const { chromeArgs } = splitLaunchUrls(launchArgs);
-    const forwardedArgs = validateForwardedLaunchArgs(chromeArgs);
+    // Keep the strict caller allowlist. The one approved fixed Automation heap cap
+    // yields to an explicitly enabled device policy, so Chromium receives one limit.
+    const forwardedArgs = validateForwardedLaunchArgs(chromeArgs).filter((arg) =>
+      !resources.optimized || arg !== "--js-flags=--max-old-space-size=512");
     // Open the window at a FRACTION of the profile's resolution (default: 65% width,
     // 90% height → a tall, narrow window so the operator can line several profiles up
     // side by side instead of each browser filling the display. This is only the OS
@@ -1475,9 +1491,13 @@ export class Launcher {
       // Cap the per-profile HTTP disk cache. Chromium otherwise sizes it from free disk,
       // and across thousands of Cloud profiles that reached 166 GB on one operator's
       // machine. Cookies/site data are separate stores; this only trims asset caching.
-      `--disk-cache-size=${20 * 1024 * 1024}`,
+      `--disk-cache-size=${resources.optimized ? Math.min(20 * 1024 * 1024, resources.memoryCacheKb * 1024) : 20 * 1024 * 1024}`,
       ...deriveFingerprintFlags(screen),
     ];
+    // V8 enforces this per renderer's old-space heap. It is a soft profile target,
+    // not a hard ceiling for the browser process tree (and the heap limit is visible
+    // to pages through performance.memory). Stored hardware/fingerprint fields stay intact.
+    if (resources.optimized) args.push(`--js-flags=--max-old-space-size=${resources.jsHeapMb}`);
     // Chromium builds with different signatures share one "Chromium Safe Storage" Keychain item,
     // and macOS stops the second build with a password prompt. The runtimes that the app
     // downloads on macOS keep their cookie key out of the Keychain instead.
@@ -1566,6 +1586,17 @@ export class Launcher {
     }
     args.push(...this.baseArgs, ...forwardedArgs.filter((arg) => !profile.chromiumRuntime || !arg.startsWith(disableFeatures)));
     return args;
+  }
+
+  private resolveResources(profileId: string): ReturnType<typeof resolveProfileResources> {
+    const policy = this.resourcePolicy?.(profileId) ?? DEFAULT_PROFILE_RESOURCE_POLICY;
+    // Bulk opens can all reach this sample before their durable launch reservations
+    // exist. Include pending starts, deduplicate those already reserved, and leave
+    // the current browser for the allocator's own +1.
+    const otherProfiles = new Set(this.store.listLaunches().map((launch) => launch.profileId));
+    for (const pendingId of this.startsInFlight.keys()) otherProfiles.add(pendingId);
+    otherProfiles.delete(profileId);
+    return resolveProfileResources(policy, this.memorySnapshot(otherProfiles.size));
   }
 
   async navigate(ws: string, urls: string[], replacePages = false): Promise<void> {
@@ -2119,6 +2150,7 @@ export class Launcher {
     const existingUserDataDir = existsSync(userDataDir);
     let personaDigest = this.launchPersonaDigest(profile, verifiedBinary.sha256, headless);
     let persona = launchPersona(profile);
+    const resources = this.resolveResources(profileId);
     mkdirSync(userDataDir, { recursive: true });
 
     // A directory that did not exist before this launch cannot have a foreign
@@ -2177,6 +2209,9 @@ export class Launcher {
         profileCardUrl(profileId),
       );
     }
+    if (resources.alwaysShowBookmarks !== undefined) {
+      await writeBookmarkBarVisibility(userDataDir, resources.alwaysShowBookmarks);
+    }
 
     const port = allocatePort({
       ...this.portRange,
@@ -2219,7 +2254,7 @@ export class Launcher {
         profile = this.requireUnchangedProfile(profileId, profileSnapshot, "proxy relay startup");
       }
       const args = this.buildArgs(
-        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, webRtcIp, opts.keepAliveWithoutWindows,
+        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, webRtcIp, opts.keepAliveWithoutWindows, resources,
       );
       this.log(`launching ${profileId} on port ${port} (seed ${profile.fingerprintSeed})`);
       launchStartedAt = Date.now();
@@ -2624,6 +2659,7 @@ export class Launcher {
     const fontPack = this.fontPack(profile);
     const fontsDir = fontPack ? await this.installFontPack(fontPack) : undefined;
     const userDataDir = this.userDataDir(profileId);
+    const resources = this.resolveResources(profileId);
     const runtime = resolvePlaywrightRuntime();
     const ownerBinaryPath = this.unsafeDisableIdentityGates
       ? runtime.nodeExecutable
@@ -2698,6 +2734,10 @@ export class Launcher {
         prefs: {
           ...firefoxStartupPrefs(profile, this.hostPlatform, this.hostArch),
           ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}),
+          ...(resources.optimized ? { "browser.cache.memory.capacity": resources.memoryCacheKb } : {}),
+          ...(resources.alwaysShowBookmarks !== undefined ? {
+            "browser.toolbars.bookmarks.visibility": resources.alwaysShowBookmarks ? "always" : "newtab",
+          } : {}),
           // Firefox outlives its last window on macOS anyway; elsewhere the engine keeps running for this pref.
           ...(opts.keepAliveWithoutWindows && this.hostPlatform !== "darwin" ? { "aliasmode.keepAliveWithoutWindows": true } : {}),
         },
@@ -5530,31 +5570,68 @@ async function openProfileCardTab(ws: string, url: string): Promise<void> {
 }
 
 /**
- * Put an identity bookmark (`<name> · #<serial>` → the card) on the bookmark bar and make
- * the bar visible. Best-effort and self-contained: writes a fresh Bookmarks file (automation
- * profiles carry no user bookmarks) and safely merges the show-bar pref into a VALID
- * Preferences (a corrupt one is left for repairCorruptPrefs). Never throws into a launch.
+ * Upsert the manager's identity bookmark without replacing the user's bookmark tree.
+ * A malformed existing file stays untouched. Never throws into a launch.
  */
-async function writeIdentityBookmark(userDataDir: string, name: string, url: string): Promise<void> {
+export async function writeIdentityBookmark(userDataDir: string, name: string, url: string): Promise<void> {
   try {
     const dir = join(userDataDir, "Default");
     mkdirSync(dir, { recursive: true });
-    const bookmarks = {
+    const path = join(dir, "Bookmarks");
+    let bookmarks: any = {
       roots: {
-        bookmark_bar: { children: [{ name, type: "url", url }], name: "Bookmarks bar", type: "folder" },
+        bookmark_bar: { children: [], name: "Bookmarks bar", type: "folder" },
         other: { children: [], name: "Other bookmarks", type: "folder" },
         synced: { children: [], name: "Mobile bookmarks", type: "folder" },
       },
       version: 1,
     };
-    writeFileSync(join(dir, "Bookmarks"), JSON.stringify(bookmarks));
+    if (existsSync(path)) {
+      try { bookmarks = JSON.parse(readFileSync(path, "utf8")); } catch { return; }
+      if (!bookmarks || typeof bookmarks !== "object" || Array.isArray(bookmarks) ||
+        !Array.isArray(bookmarks.roots?.bookmark_bar?.children)) return;
+    }
+    const children: any[] = bookmarks.roots.bookmark_bar.children;
+    const managed = children.find((entry) => entry?.type === "url" && isSameProfileCard(entry.url, url));
+    if (managed) {
+      managed.name = name;
+      managed.url = url;
+    } else {
+      children.unshift({ name, type: "url", url });
+    }
+    await writeFileAtomic(path, JSON.stringify(bookmarks));
+    await writeBookmarkBarVisibility(userDataDir, true);
+  } catch { /* best-effort: identity extras must never fail a launch */ }
+}
+
+function isSameProfileCard(candidate: unknown, expected: string): boolean {
+  if (typeof candidate !== "string") return false;
+  try {
+    const a = new URL(candidate);
+    const b = new URL(expected);
+    // The manager's loopback port can change. Only its exact card route and profile
+    // id qualify; a user's unrelated localhost bookmark must never be repurposed.
+    return a.protocol === "http:" && a.hostname === "127.0.0.1" && a.pathname === "/card" &&
+      !a.username && !a.password && !a.hash && [...a.searchParams].length === 1 &&
+      a.searchParams.get("id") === b.searchParams.get("id");
+  } catch { return false; }
+}
+
+/** Merge only bar visibility, after exclusive profile-directory ownership was established. */
+async function writeBookmarkBarVisibility(userDataDir: string, always: boolean): Promise<void> {
+  try {
+    const dir = join(userDataDir, "Default");
+    mkdirSync(dir, { recursive: true });
     const prefsPath = join(dir, "Preferences");
     let prefs: any = {};
     if (existsSync(prefsPath)) {
       try { prefs = JSON.parse(readFileSync(prefsPath, "utf8")); } catch { return; } // corrupt → leave for repair
     }
-    if (typeof prefs !== "object" || prefs === null) return;
-    prefs.bookmark_bar = { ...(prefs.bookmark_bar ?? {}), show_on_all_tabs: true };
+    if (typeof prefs !== "object" || prefs === null || Array.isArray(prefs)) return;
+    const bar = prefs.bookmark_bar;
+    prefs.bookmark_bar = {
+      ...(bar && typeof bar === "object" && !Array.isArray(bar) ? bar : {}), show_on_all_tabs: always,
+    };
     await writeFileAtomic(prefsPath, JSON.stringify(prefs));
   } catch { /* best-effort: identity extras must never fail a launch */ }
 }

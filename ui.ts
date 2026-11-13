@@ -67,6 +67,7 @@ import { loadServices } from "./services-directory.ts";
 import { createHash } from "node:crypto";
 import { BrowserSyncError, BrowserSyncRuntime, browserSyncSelection, type BrowserSyncLifecycle, type BrowserSyncTarget } from "./browser-sync.ts";
 import { callFirefoxOwner } from "./firefox-runtime.ts";
+import { parseProfileResourcePolicy, resourceMemorySnapshot, resolveProfileResources } from "./profile-resources.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -719,6 +720,55 @@ export async function handleUiRequest(
 ): Promise<Response | null> {
   const { pathname } = new URL(req.url);
   if (!pathname.startsWith("/ui/api/")) return null;
+
+  const resourceRoute = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/resources$/);
+  if (resourceRoute) {
+    if (remote) return noStoreJson({ ok: false, error: "Device resource settings are unavailable in legacy Remote mode" }, 400);
+    if (!["GET", "POST"].includes(req.method)) return noStoreJson({ ok: false, error: "Method not allowed" }, 405);
+    if (req.method === "POST") {
+      const rejected = rejectUntrustedJsonMutation(req);
+      if (rejected) return rejected;
+    }
+    let id: string;
+    try { id = decodeURIComponent(resourceRoute[1]!); } catch { return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400); }
+    if (!isSafeProfileId(id)) return noStoreJson({ ok: false, error: PROFILE_ID_ERROR }, 400);
+    const configuredMode = options.appConfig?.read().mode;
+    if (options.runtimeMode && configuredMode && configuredMode !== options.runtimeMode) {
+      return noStoreJson({ ok: false, error: "Restart the app to use the selected mode" }, 409);
+    }
+    const cloudMode = options.runtimeMode === "cloud" || configuredMode === "cloud" || !!options.cloudBrowser;
+    // These settings stay on this device, but a cached profile is never evidence
+    // of current Cloud access. The authoritative roster also includes closed
+    // profiles that have never been decrypted or opened on this device.
+    if (cloudMode) {
+      if (!options.cloudBrowser) return noStoreJson({ ok: false, error: "Cloud connection is unavailable" }, 503);
+      try {
+        const roster = await options.cloudBrowser.listRoster();
+        const profile = roster.profiles.find((candidate) => candidate.id === id);
+        if (!profile) return noStoreJson({ ok: false, error: "Profile not found" }, 404);
+        if (profile.permission !== "edit") return noStoreJson({ ok: false, error: "Edit access is required to manage profile resource settings" }, 403);
+      } catch (error) {
+        return noStoreJson({ ok: false, error: "Cloud profile access could not be verified" }, error instanceof CloudApiError ? error.status : 503);
+      }
+    } else if (!store.getProfile(id)) {
+      return noStoreJson({ ok: false, error: "Profile not found" }, 404);
+    }
+    if (req.method === "POST") {
+      let policy;
+      try { policy = parseProfileResourcePolicy(await req.json()); }
+      catch (error) { return noStoreJson({ ok: false, error: error instanceof SyntaxError ? "Invalid JSON" : msg(error) }, 400); }
+      // A RAM-only save must not implicitly reset a previously chosen bookmarks
+      // option, or add an override to a profile that never had one.
+      const existing = store.getProfileResourcePolicy(id);
+      if (policy.alwaysShowBookmarks === undefined && existing.alwaysShowBookmarks !== undefined) {
+        policy.alwaysShowBookmarks = existing.alwaysShowBookmarks;
+      }
+      store.setProfileResourcePolicy(id, policy);
+    }
+    const policy = store.getProfileResourcePolicy(id);
+    const system = resourceMemorySnapshot(store.listLaunches().filter((launch) => launch.profileId !== id).length);
+    return noStoreJson({ ok: true, policy, allocation: resolveProfileResources(policy, system), system, appliesNextLaunch: true });
+  }
 
   if (pathname === "/ui/api/browser-sync") {
     if (remote) return noStoreJson({ ok: false, error: "Browser mirroring is unavailable in legacy Remote mode" }, 400);
@@ -1853,7 +1903,7 @@ export async function handleUiRequest(
         return new Response(bytes as unknown as BodyInit, {
           headers: {
             "content-type": mime,
-            "content-disposition": `attachment; filename=aliasmode-export.${format}`,
+            "content-disposition": `attachment; filename=gamebrowser-export.${format}`,
             "cache-control": "no-store",
           },
         });
