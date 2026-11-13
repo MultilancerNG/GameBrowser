@@ -17,6 +17,12 @@ jobs:
     if: github.repository == 'MultilancerNG/GameBrowser'
     runs-on: ubuntu-latest
     steps:
+      - name: Prepare screenshot text inspection
+        run: |
+          if ! command -v tesseract >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y tesseract-ocr
+          fi
       - name: Read existing installed smoke reports
         shell: pwsh
         env:
@@ -99,4 +105,18 @@ jobs:
               catch { Write-PublicSmokeAnnotation -Title $file.Name -Message 'Smoke stderr evidence could not be read'; continue }
               if (-not [string]::IsNullOrWhiteSpace($message)) { Write-PublicSmokeAnnotation -Title $file.Name -Message $message -Limit 4000 -Tail }
             }
+          }
+          # These screenshots belong to the fresh Local CI workspace above, with fake profiles only.
+          foreach ($file in @(Get-ChildItem -LiteralPath evidence -File -Filter '*.workspace.png' | Select-Object -First 1)) {
+            if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $file.Length -gt 4194304) {
+              Write-PublicSmokeAnnotation -Title 'Skipped screenshot' -Message 'Screenshot must be a regular file no larger than 4 MiB'
+              continue
+            }
+            $outputBase = Join-Path $env:RUNNER_TEMP 'gamebrowser-smoke-screenshot-text'
+            & tesseract $file.FullName $outputBase --psm 11 2>$null
+            if ($LASTEXITCODE -ne 0) { throw 'Existing screenshot text inspection failed' }
+            $textPath = "$outputBase.txt"
+            if ((Get-Item -LiteralPath $textPath).Length -gt 1048576) { throw 'Screenshot text exceeded the evidence bound' }
+            $text = [IO.File]::ReadAllText($textPath)
+            Write-PublicSmokeAnnotation -Title 'Existing Local smoke screenshot text' -Message $text -Limit 4000
           }

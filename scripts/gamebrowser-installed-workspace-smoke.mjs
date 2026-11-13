@@ -13,7 +13,7 @@ assert.equal(base.protocol, 'http:'); assert.equal(base.hostname, '127.0.0.1'); 
 const screenshot = resolve(screenshotValue), report = resolve(reportValue);
 const playwright = await import(pathToFileURL(join(runtime, 'node_modules', 'playwright-core', 'index.mjs')).href);
 const checks = {}, errors = [], observed = { clicked: false, typed: false, visited: false, firefox: { clicks: 0, value: "" }, chromium: { clicks: 0, value: "" } };
-let browser, page, fixture, token, profileId, adminId, stage = 'debug-endpoint', failure;
+let browser, page, fixture, token, profileId, adminId, stage = 'debug-endpoint', failure, liveDiagnostics;
 const deadline = setTimeout(() => {
   const error = 'Installed workspace smoke exceeded its twelve-minute bound';
   writeFileSync(report, `${JSON.stringify({ success: false, stage, checks, error, pageErrorCount: errors.length }, null, 2)}\n`);
@@ -205,7 +205,26 @@ try {
   stage = 'complete';
 } catch (error) {
   failure = error instanceof Error ? error.message : 'Installed Live workspace smoke failed';
-  if (page && !page.isClosed()) await page.screenshot({ path: screenshot, fullPage: false }).catch(() => {});
+  if (page && !page.isClosed()) {
+    // Preserve bounded live UI facts before owned browser/desktop cleanup removes the evidence.
+    liveDiagnostics = await page.evaluate(({ profileId, adminId }) => {
+      const tile = document.querySelector(`.live-tile[data-profile-id="${profileId || adminId || ''}"]`);
+      const canvas = tile?.querySelector('canvas'), style = canvas ? getComputedStyle(canvas) : null;
+      const box = canvas?.getBoundingClientRect();
+      const text = selector => (document.querySelector(selector)?.textContent || '').trim().slice(0, 240);
+      return { visibility: document.visibilityState, documentFocused: document.hasFocus(),
+        relay: text('#connection-state'), workspaceHidden: document.querySelector('#browser-workspace')?.hidden ?? null,
+        role: tile?.getAttribute('data-role') ?? null, state: tile?.getAttribute('data-state') ?? null,
+        frameMessage: (tile?.querySelector('.stream-message-title')?.textContent || '').slice(0, 240),
+        frameDetail: (tile?.querySelector('.stream-message-detail')?.textContent || '').slice(0, 240),
+        frameMessageHidden: tile?.querySelector('.stream-message')?.hidden ?? null,
+        browserError: text('#browser-error'), pageError: text('#error-text'),
+        canvas: canvas ? { active: canvas.classList.contains('manual-active'), width: canvas.width, height: canvas.height,
+          cssWidth: Math.round(box.width), cssHeight: Math.round(box.height), display: style.display, visibility: style.visibility } : null };
+    }, { profileId, adminId }).catch(() => ({ unavailable: true }));
+    failure += `; Live UI facts: ${JSON.stringify(liveDiagnostics)}`;
+    await page.screenshot({ path: screenshot, fullPage: false }).catch(() => {});
+  }
 } finally {
   if (token) await api('sync', undefined, 'DELETE').catch(() => {});
   if (adminId && token) await api('stop', { profileId: adminId }).catch(() => {});
@@ -214,7 +233,7 @@ try {
   await browser?.close().catch(() => {});
   await new Promise(done => fixture ? fixture.close(done) : done());
   clearTimeout(deadline);
-  await writeFile(report, `${JSON.stringify({ success: !failure, stage, checks, error: failure ?? null, pageErrorCount: errors.length }, null, 2)}\n`);
+  await writeFile(report, `${JSON.stringify({ success: !failure, stage, checks, error: failure ?? null, pageErrorCount: errors.length, liveDiagnostics }, null, 2)}\n`);
 }
 if (failure) throw new Error(`Installed Live workspace smoke failed at ${stage}: ${failure}`);
 console.log(JSON.stringify({ installedLiveWorkspace: true, actualBundledFirefox: true, frames: true, manualInput: true, tabs: true, mixedFollowing: true, firefoxReopen: true }));
