@@ -3,18 +3,89 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="GameBrowser: a local-first browser profile workspace for Windows, developed by Solomon Gbeta.">
+  <meta name="description" content="GameBrowser for Windows: separate browser profiles, Admin and Follower controls, Local mode without an account, and optional Cloud sharing. Download the published beta 78 installer.">
   <title>GameBrowser — Your profiles. Your rules.</title>
   <link rel="stylesheet" href="style.css">
 </head>
-<body>
-  <header><a class="brand" href="#"><span class="mark" aria-hidden="true">//</span> GameBrowser</a></header>
-  <main>
-    <section class="hero">
-      <div class="intro"><h1>Your profiles.<br><span>Your rules.</span></h1><p>A local-first browser workspace for Windows.</p><a class="button" href="https://github.com/MultilancerNG/GameBrowser/releases/download/v0.1.0-beta.78/GameBrowser_0.1.0-beta.78_x64-offline-setup.exe">Download for Windows <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div>
-      <div class="browser" aria-label="Illustration of three separate browser profiles"><div class="chrome"><span><b class="mark">//</b> GameBrowser</span><span aria-hidden="true">− &nbsp; □ &nbsp; ×</span></div><div class="address">Search or enter address</div><div class="profiles"><div><b class="symbol">01</b><p><strong>Gaming</strong><small>Profile · Local</small></p><span aria-hidden="true">›</span></div><div><b class="symbol">02</b><p><strong>Work</strong><small>Profile · Local</small></p><span aria-hidden="true">›</span></div><div><b class="symbol">03</b><p><strong>Personal</strong><small>Profile · Local</small></p><span aria-hidden="true">›</span></div></div></div>
+<body id="top">
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header>
+    <a class="brand" href="#top"><span class="mark" aria-hidden="true">//</span> GameBrowser</a>
+    <nav aria-label="Main navigation"><a href="#features">Features</a><a href="#how-it-works">How it works</a><a href="#download">Download</a></nav>
+  </header>
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="intro">
+        <h1 id="hero-title">Your profiles.<br><span>Your rules.</span></h1>
+        <p>A local-first browser workspace for Windows. Keep sessions separate and repeat supported actions across profiles.</p>
+        <a class="button" href="https://github.com/MultilancerNG/GameBrowser/releases/download/v0.1.0-beta.78/GameBrowser_0.1.0-beta.78_x64-offline-setup.exe">Download for Windows <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+        <p class="download-version">Windows x64 · beta 78 · current published installer</p>
+      </div>
+      <div class="profile-illustration">
+        <div class="browser" aria-label="Concept illustration of three separate browser profiles">
+          <div class="chrome"><span><b class="mark">//</b> GameBrowser</span><span aria-hidden="true">− &nbsp; □ &nbsp; ×</span></div>
+          <div class="address">Search or enter address</div>
+          <div class="profiles"><div><b class="symbol">01</b><p><strong>Gaming</strong><small>Profile · Local</small></p><span aria-hidden="true">›</span></div><div><b class="symbol">02</b><p><strong>Work</strong><small>Profile · Local</small></p><span aria-hidden="true">›</span></div><div><b class="symbol">03</b><p><strong>Personal</strong><small>Profile · Local</small></p><span aria-hidden="true">›</span></div></div>
+        </div>
+        <p class="illustration-note">Profile concept illustration · not a product screenshot</p>
+      </div>
     </section>
-    <section class="download" aria-label="Windows download status"><h2>Windows x64 beta is available</h2></section>
+
+    <section class="availability" aria-labelledby="availability-title">
+      <div class="availability-current">
+        <span class="release-label">Current download</span>
+        <h2 id="availability-title">Windows beta 78</h2>
+        <p>Use the profile list for separate sessions, Admin/Follower controls, import/export and device settings.</p>
+      </div>
+      <div class="availability-next">
+        <span class="release-label">Next update — Windows validation in progress</span>
+        <h3>Live workspace &amp; Full Admin View</h3>
+        <p>The live grid and expanded browser view are <strong>not in beta 78</strong>. This update has not passed final installed Windows validation yet and is not released.</p>
+      </div>
+      <div class="upcoming-functions"><h3>Planned in the Live workspace update</h3><ul><li>Embedded tabs, address bar, bookmarks and fullscreen</li><li>A CPU/RAM task manager</li><li>Expanded extension controls and Firefox add-ons</li><li>A saved proxy library</li><li>Local workflows and schedules</li></ul></div>
+    </section>
+
+    <section class="content-section" id="features" aria-labelledby="features-title">
+      <div class="section-intro"><h2 id="features-title">Tools for your profiles</h2><p>These functions are available through the published beta 78 profile list and settings.</p></div>
+      <div class="features">
+        <article><span class="number" aria-hidden="true">01</span><div><h3>Local, without an account</h3><p>Choose Local mode to keep profile data on your Windows device. You can create and run Local profiles without a Cloud account.</p></div></article>
+        <article><span class="number" aria-hidden="true">02</span><div><h3>Separate sessions &amp; identities</h3><p>Each profile keeps its own saved browser identity, cookies and website storage. Reopening a profile preserves that profile’s settings and sessions.</p></div></article>
+        <article><span class="number" aria-hidden="true">03</span><div><h3>Admin &amp; Followers</h3><p>A Chromium Admin can control Chromium or Firefox followers. Supported actions include clicks, typing, standard keys, checkbox/select changes, scrolling and website navigation. File uploads and operating-system dialogs are not replayed.</p></div></article>
+        <article><span class="number" aria-hidden="true">04</span><div><h3>Groups that stay assigned</h3><p>Selection alone leaves an active following group unchanged. Use Apply selection to change it, or Stop following to detach without closing browsers. Automatic Admin selection is optional and starts off.</p></div></article>
+        <article><span class="number" aria-hidden="true">05</span><div><h3>Save, reopen, resume</h3><p>Save following assignments for later. Open the required profiles, then explicitly resume the saved group. A saved group does not automatically launch browsers or serve as a browser-data backup.</p></div></article>
+        <article><span class="number" aria-hidden="true">06</span><div><h3>Organize &amp; move data</h3><p>Use profile groups, drag order and recoverable bulk Trash. Import/export supported saved profile and cookie fields with TXT or XLSX; CSV carries account credentials. Exports are readable files, not complete browser-folder backups.</p></div></article>
+        <article><span class="number" aria-hidden="true">07</span><div><h3>Choose your dimensions</h3><p>Save desktop or mobile-sized screen dimensions with each profile. These are dimension settings; they do not emulate a mobile operating system or touch hardware.</p></div></article>
+        <article><span class="number" aria-hidden="true">08</span><div><h3>Memory &amp; bookmarks</h3><p>Choose Auto or a manual RAM target, with optional memory optimization at the next fresh launch. Targets are soft, not total-process RAM caps. Set the bookmarks-bar preference while preserving existing bookmarks.</p></div></article>
+        <article><span class="number" aria-hidden="true">09</span><div><h3>Cloud sharing &amp; MCP</h3><p>With a compatible Cloud service, verified accounts can use shared workspaces, portable profile sync and device controls. Use Settings → Team to invite members and share group or profile access.</p><p>Local MCP connects supported installed agents. Remote MCP connectors need that separate Cloud service and authorization.</p></div></article>
+      </div>
+    </section>
+
+    <section class="content-section how-it-works" id="how-it-works" aria-labelledby="how-title">
+      <div class="section-intro"><h2 id="how-title">Start with the profile list</h2><p>Use these controls in beta 78. Live grid and Full Admin View belong to the next update.</p></div>
+      <ol class="steps">
+        <li><span class="step-number" aria-hidden="true">01</span><h3>Choose your mode</h3><p>Install GameBrowser and choose Local for account-free use, or sign in to your compatible Cloud service.</p></li>
+        <li><span class="step-number" aria-hidden="true">02</span><h3>Open two or more profiles</h3><p>Create or import profiles. Open the browsers you want to use; at least one must be Chromium to act as Admin.</p></li>
+        <li><span class="step-number" aria-hidden="true">03</span><h3>Assign &amp; start following</h3><p>Select at least two running profiles in the list. Choose a Chromium Admin and one or more followers, then select Start following.</p></li>
+        <li><span class="step-number" aria-hidden="true">04</span><h3>Work from the Admin</h3><p>Use supported actions in the Admin browser. Apply selection changes explicitly, or stop following when you want independent sessions.</p></li>
+      </ol>
+    </section>
+
+    <section class="content-section faq-section" aria-labelledby="faq-title">
+      <div class="section-intro"><h2 id="faq-title">A few things to know</h2></div>
+      <div class="faq">
+        <details><summary>Why is the download beta 78?</summary><p>Beta 78 is the current published Windows installer. The Live workspace update has not passed final installed Windows validation yet, so the download remains beta 78.</p></details>
+        <details><summary>Where are Live workspace and Full Admin View?</summary><p>They are planned for the next update and are not in this download. In beta 78, use the existing profile list for following, selection, import/export and browser settings.</p></details>
+        <details><summary>What changes when I select a follower?</summary><p>With automatic following off, selecting a follower moves the selection without changing the active Admin or group. Apply selection changes explicitly. The optional automatic mode uses the newest selected Chromium profile as Admin; Firefox can follow.</p></details>
+        <details><summary>Do I need Cloud for team access or agents?</summary><p>Local mode and Local MCP need no Cloud account. Team invitations, shared profile/group access and remote connectors need a separate compatible Cloud service. This download page does not host browser sessions or provide that service.</p></details>
+        <details><summary>Can I use browser extensions?</summary><p>Beta 78 includes Manage extensions for Chromium profiles, with local uploads, supported Chrome Web Store installs and profile or group assignments. The Live workspace update adds expanded controls and Firefox add-on support.</p></details>
+        <details><summary>Which Windows installer should I choose?</summary><p>The full x64 installer includes WebView2. The slim installer downloads WebView2 when needed; additional browser runtimes may download separately. SHA-256 checksums are provided with the release files.</p></details>
+      </div>
+    </section>
+
+    <section class="download" id="download" aria-labelledby="download-title">
+      <div><h2 id="download-title">Download GameBrowser for Windows</h2><p class="download-copy">Current release: <strong>0.1.0-beta.78</strong> · Windows x64</p><p class="download-note">Live workspace and Full Admin View are not included yet.</p></div>
+      <div class="download-actions"><a class="button" href="https://github.com/MultilancerNG/GameBrowser/releases/download/v0.1.0-beta.78/GameBrowser_0.1.0-beta.78_x64-offline-setup.exe">Download full installer <span aria-hidden="true">→</span></a><div class="download-links"><a href="https://github.com/MultilancerNG/GameBrowser/releases/download/v0.1.0-beta.78/GameBrowser_0.1.0-beta.78_x64-setup.exe">Slim installer</a><a href="https://github.com/MultilancerNG/GameBrowser/releases/download/v0.1.0-beta.78/SHA256SUMS.txt">SHA-256 checksums</a></div></div>
+    </section>
   </main>
   <footer><p>Developed by Solomon Gbeta · <a href="https://solomon.ng">solomon.ng</a></p><p>Based on AliasMode · Apache-2.0</p></footer>
 </body>

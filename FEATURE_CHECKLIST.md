@@ -10,7 +10,8 @@ Checked items have been verified in the named build or surface. **Windows beta 7
 - [x] Windows x64 full/offline and slim installers, with SHA-256 checksums.
 - [x] Beta 78 passed fresh installed-app startup, Local mode, Local MCP, agent discovery, shutdown and uninstall checks.
 - [x] Cyber-style download landing page and direct installer download.
-- [x] Removed landing-page GitHub/source links and feature section as requested.
+- [x] Removed landing-page GitHub/source navigation links.
+- [x] Updated the download page with feature descriptions, setup steps, FAQs and full/slim installer links, distinguishing the current release from the upcoming Live workspace update.
 - [x] GitHub Pages deployment of the download page.
 - [ ] Publish the prepared site through Sites.
 - [ ] Assign and verify gamebrowser.fiam.dev through Sites and Cloudflare, including HTTPS.
