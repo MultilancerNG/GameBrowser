@@ -68,6 +68,26 @@ function Run-WithTimeout([string]$Executable, [string[]]$Arguments, [int]$Timeou
   if ($process.ExitCode -ne 0) { throw "Installed application operation exited with code $($process.ExitCode)" }
 }
 
+function Read-McpResponse([Diagnostics.Process]$Process, [int]$RequestId, [int]$TimeoutMs) {
+  $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+  for ($messages = 0; $messages -lt 128; $messages++) {
+    $remaining = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+    if ($remaining -le 0) { throw 'Installed MCP stdio response timed out' }
+    $lineTask = $Process.StandardOutput.ReadLineAsync()
+    if (-not $lineTask.Wait($remaining)) { throw 'Installed MCP stdio response timed out' }
+    $line = $lineTask.Result
+    if ($null -eq $line) { throw 'Installed MCP stdio closed before responding' }
+    if ($line.Length -gt 4MB) { throw 'Installed MCP stdio response exceeded its limit' }
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    try { $message = $line | ConvertFrom-Json -Depth 64 } catch { throw 'Installed MCP emitted malformed JSON' }
+    if ($message.jsonrpc -cne '2.0') { throw 'Installed MCP emitted an invalid JSON-RPC response' }
+    if ($message.id -ne $RequestId) { continue }
+    if ($message.error) { throw 'Installed MCP returned a JSON-RPC request error' }
+    return $message.result
+  }
+  throw 'Installed MCP emitted too many messages before responding'
+}
+
 try {
   $name = [IO.Path]::GetFileName($installer)
   $entries = @([IO.File]::ReadAllLines($checksums) | Where-Object { $_ -match ('^[a-f0-9]{64}  ' + [regex]::Escape($name) + '$') })
@@ -155,6 +175,89 @@ try {
   $checks.independentFromCheckout = $true
   $checks.localModeWithoutAccount = $true
   $checks.noProfileOrEngineDownloads = $true
+
+  $stage = 'installed-agent-discovery'
+  $profilesOut = Join-Path $runRoot 'helper-profiles.json'
+  $profilesErr = Join-Path $runRoot 'helper-profiles.stderr'
+  $profilesProcess = Start-Process -FilePath $helper -ArgumentList @('profiles', 'list') -WorkingDirectory $runRoot -PassThru -RedirectStandardOutput $profilesOut -RedirectStandardError $profilesErr
+  if (-not $profilesProcess.WaitForExit(30000)) {
+    $profilesProcess.Kill($true)
+    throw 'Installed MCP helper profile listing timed out'
+  }
+  if ($profilesProcess.ExitCode -ne 0) { throw 'Installed MCP helper could not discover and query the desktop runtime' }
+  $profilesResult = Get-Content -LiteralPath $profilesOut -Raw | ConvertFrom-Json
+  if (-not $profilesResult.ok -or $profilesResult.result.profiles -isnot [array] -or $profilesResult.result.profiles.Count -ne 0) {
+    throw 'Installed MCP helper did not return the fresh empty profile roster'
+  }
+  $desktop.Refresh()
+  if ($desktop.HasExited) { throw 'Installed MCP helper terminated the desktop runtime' }
+  $agentHealth = Invoke-RestMethod "$base/ui/api/health" -TimeoutSec 5
+  if (-not $agentHealth.ok -or $agentHealth.instance -cne $descriptor.generation) {
+    throw 'Desktop runtime health changed after the installed MCP helper disconnected'
+  }
+  $checks.installedAgentDiscovery = $true
+
+  $stage = 'installed-mcp-stdio'
+  $mcp = [Diagnostics.Process]::new()
+  $mcp.StartInfo = [Diagnostics.ProcessStartInfo]::new()
+  $mcp.StartInfo.FileName = $helper
+  $mcp.StartInfo.ArgumentList.Add('serve')
+  $mcp.StartInfo.WorkingDirectory = $runRoot
+  $mcp.StartInfo.UseShellExecute = $false
+  $mcp.StartInfo.CreateNoWindow = $true
+  $mcp.StartInfo.RedirectStandardInput = $true
+  $mcp.StartInfo.RedirectStandardOutput = $true
+  $mcp.StartInfo.RedirectStandardError = $true
+  try {
+    if (-not $mcp.Start()) { throw 'Installed MCP helper did not start' }
+    # Drain diagnostics concurrently so a child cannot block on a full stderr pipe.
+    $mcpStderr = $mcp.StandardError.ReadToEndAsync()
+    $mcp.StandardInput.AutoFlush = $true
+    $initialize = @{
+      jsonrpc = '2.0'
+      id = 1
+      method = 'initialize'
+      params = @{
+        protocolVersion = '2024-11-05'
+        capabilities = @{}
+        clientInfo = @{ name = 'gamebrowser-installed-smoke'; version = $ExpectedVersion }
+      }
+    }
+    $mcp.StandardInput.WriteLine(($initialize | ConvertTo-Json -Compress -Depth 8))
+    $initialized = Read-McpResponse -Process $mcp -RequestId 1 -TimeoutMs 60000
+    if (-not $initialized.protocolVersion -or $initialized.serverInfo.version -cne $ExpectedVersion) {
+      throw 'Installed MCP initialization returned an incorrect server identity'
+    }
+    $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
+    $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
+    $listed = Read-McpResponse -Process $mcp -RequestId 2 -TimeoutMs 30000
+    if ($listed.tools -isnot [array] -or @($listed.tools.name) -cnotcontains 'aliasmode_profiles_list') {
+      throw 'Installed MCP stdio did not list the local profile tools'
+    }
+    $nodeHosts = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object {
+      $_.ExecutablePath -and (Test-WithinRoot ([string]$_.ExecutablePath) $installRoot)
+    })
+    if ($nodeHosts.Count -lt 1) { throw 'Installed MCP did not use the packaged Node runtime' }
+    $mcp.StandardInput.Close()
+    if (-not $mcp.WaitForExit(15000)) { throw 'Installed MCP helper did not exit after stdin closed' }
+    if ($mcp.ExitCode -ne 0) { throw 'Installed MCP helper exited nonzero after stdio shutdown' }
+    foreach ($nodeHost in $nodeHosts) {
+      if (Get-Process -Id $nodeHost.ProcessId -ErrorAction SilentlyContinue) {
+        throw 'Packaged MCP Node host survived helper shutdown'
+      }
+    }
+  } finally {
+    try {
+      if ($mcp.StartTime -and -not $mcp.HasExited) { $mcp.Kill($true); $null = $mcp.WaitForExit(15000) }
+    } catch { }
+    $mcp.Dispose()
+  }
+  $desktop.Refresh()
+  $mcpHealth = Invoke-RestMethod "$base/ui/api/health" -TimeoutSec 5
+  if ($desktop.HasExited -or -not $mcpHealth.ok -or $mcpHealth.instance -cne $descriptor.generation) {
+    throw 'Local MCP stdio shutdown stopped or replaced the desktop runtime'
+  }
+  $checks.installedMcpStdio = $true
 
   $stage = 'desktop-window-shutdown'
   Run-WithTimeout -Executable $app -Arguments @() -TimeoutMs 15000
