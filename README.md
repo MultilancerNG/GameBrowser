@@ -8,7 +8,7 @@ GameBrowser adapts the complete Apache-2.0 [AliasMode desktop application](https
 
 [Windows releases](https://github.com/MultilancerNG/GameBrowser/releases) · [Source](https://github.com/MultilancerNG/GameBrowser)
 
-The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to `https://multilancerng.github.io/GameBrowser/` after Pages is enabled with **GitHub Actions** as its source. Windows beta 77 has full and slim installers plus SHA-256 checksums in Releases, and has passed a fresh installed-app smoke check. Beta 78 is building with the latest profile controls. Newer source changes are released only after their Windows workflow passes. Installed-app validation is tracked separately from compilation.
+The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to `https://multilancerng.github.io/GameBrowser/` after Pages is enabled with **GitHub Actions** as its source. Windows beta 78 has full and slim installers plus SHA-256 checksums in Releases, and has passed a fresh installed-app smoke check including Local MCP initialization, tool listing and agent discovery. It includes the latest following, import/export, and device-local browser resource controls. Newer source changes are released only after their Windows workflow passes. Installed-app validation is tracked separately from compilation.
 
 ## Features
 
@@ -62,7 +62,7 @@ The dashboard and Local API bind to loopback. Choose Local on first use to run w
 
 ## Build Windows installers
 
-Run **Actions → GameBrowser Windows → Run workflow**. It downloads the pinned upstream Firefox archive, verifies its published SHA-256, prepares the sidecar with verified baseline Bun, and builds full and slim NSIS installers with a checksum file. The next release workflow also gates publication on a fresh Windows install/start/Local-mode/MCP/shutdown/uninstall smoke check. The full installer bundles WebView2; the slim installer downloads it when required. The upstream engine archive must remain publicly available.
+Run **Actions → GameBrowser Windows → Run workflow**. It downloads the pinned upstream Firefox archive, verifies its published SHA-256, prepares the sidecar with verified baseline Bun, and builds full and slim NSIS installers with a checksum file. The release workflow gates publication on a fresh Windows install/start/Local-mode/MCP/shutdown/uninstall smoke check. The full installer bundles WebView2; the slim installer downloads it when required. The upstream engine archive must remain publicly available.
 
 The artifact is `gamebrowser-windows-x64`. For a prerelease, push a `v` tag matching the version in `src-tauri/tauri.conf.json` after checking the build. Tag builds publish installers and `SHA256SUMS.txt` to this repository's Releases. Installers are currently unsigned; Windows may show an unknown publisher prompt. Test installation, profile launch, update and uninstall on Windows before a public stable release.
 

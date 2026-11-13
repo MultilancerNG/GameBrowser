@@ -1,6 +1,6 @@
 # GameBrowser feature checklist
 
-This distinguishes implemented desktop code from live-service and release validation. Windows beta 77 is published and has passed its installed Windows smoke check. Beta 78 is building from the latest source.
+This distinguishes implemented desktop code from live-service and release validation. Windows beta 78 is published and has passed its installed Windows smoke check, including Local MCP initialization, tool listing and agent discovery. The download page points to its verified full installer.
 
 ## Implemented and verified in source
 
@@ -20,15 +20,15 @@ This distinguishes implemented desktop code from live-service and release valida
 - [x] Trusted-event capture isolated from website scripts, bounded queues and visible follower errors.
 - [x] Stop detaches mirroring without closing the browser profiles.
 - [x] Cyber download page, direct Windows download, source links/features section removed as requested.
-- [x] Full/slim Windows installers and SHA-256 checksums published for beta 77.
-- [x] Published beta 77 passed a fresh Windows install/start/Local-mode/helper/shutdown/uninstall check.
+- [x] Full/slim Windows installers and SHA-256 checksums published for beta 78.
+- [x] Published beta 78 passed a fresh Windows install/start/Local-mode/helper/shutdown/uninstall check.
 - [x] Installed Windows Local MCP initialization, tools/list, and agent discovery passed.
 - [x] Current dashboard layout and existing controls retained.
 - [x] Import supported TXT/CSV/JSON/XLSX profile exports or pasted account data.
 - [x] Discoverable export controls for one profile, selected profiles or the filtered view.
 - [x] TXT/XLSX identity and cookie exports; CSV account credentials, with Cloud edit checks.
 
-## Latest desktop source; Windows release validation pending
+## Latest published desktop release: Windows beta 78
 
 - [x] Freeze sync assignments by default when a follower is clicked; explicit Apply selection/Stop.
 - [x] Optional Auto-follow Admin selection; automatically apply other selected profiles as followers.
@@ -37,10 +37,10 @@ This distinguishes implemented desktop code from live-service and release valida
 - [x] Retain groups while browsers are closed and reconnect future actions when profiles reopen.
 - [x] Full regression: 2,107 passed, 10 skipped; focused final UI/API/selection tests passed.
 - [x] Browser QA covers rapid Admin changes, pending Stop, Firefox followers and import/export roundtrips.
-- [x] Beta 77 full/slim installers built and installed Windows smoke passed.
-- [ ] Complete the running beta 78 Windows build and installed-app validation, then update the download.
+- [x] Beta 78 full/slim installers built and installed Windows smoke passed.
+- [x] Beta 78 Windows build, installed-app validation and publication completed; download updated.
 
-## Browser settings implemented in beta 78 source
+## Browser settings included in Windows beta 78
 
 - [x] Device-local resource policy API with Auto/manual RAM targets and Cloud edit authorization.
 - [x] Opt-in heap/cache optimization on new launches; existing browsers and identities retained.
@@ -59,4 +59,4 @@ RAM settings are soft heap/cache targets, not total-process memory caps. They ap
 - [ ] Configure/confirm gamebrowser.fiam.dev through Sites and Cloudflare, including HTTPS.
 - [ ] Configure a GameBrowser signing key before publishing signed in-app update manifests.
 
-The Cloud service is separate from the public desktop source. Sites and Cloudflare tools are not available in this session, so the domain is not confirmed connected. Mobile-sized presets change dimensions; they do not emulate a mobile operating system or touch hardware.
+The Cloud service is separate from the public desktop source. Sites and Cloudflare tools are not available in this session, so the domain is not confirmed connected. A network-access draft has been saved for review but is not applied; the environment needs review/save and Publish before the permitted live checks can be retried. No secrets were added. Mobile-sized presets change dimensions; they do not emulate a mobile operating system or touch hardware.
