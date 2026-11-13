@@ -107,6 +107,7 @@ export class HubClient {
     if (upstreamSignal?.aborted) abortFromUpstream();
     else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
 
+    // The awaited request owns its deadline until finally clears it.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -114,7 +115,6 @@ export class HubClient {
         controller.abort(error);
         reject(error);
       }, this.requestTimeoutMs);
-      if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
     });
 
     try {

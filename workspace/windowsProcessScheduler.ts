@@ -30,7 +30,6 @@ export class WindowsProcessScheduler {
         if (index < 0) return;
         this.pending.splice(index, 1); entry.controller.abort(); entry.finish(null);
       }, queueTimeoutMs);
-      entry.timer.unref?.();
       this.pending.push(entry); this.next();
     });
   }

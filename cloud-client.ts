@@ -177,6 +177,7 @@ export class CloudClient {
 
     // The limit covers silence, not total transfer time: a large roster on a
     // slow link keeps arriving and must not fail only because it needs longer.
+    // Keep its deadline referenced while the awaited request is pending.
     let timer: ReturnType<typeof setTimeout> | undefined;
     let rejectTimeout!: (error: CloudRequestError) => void;
     const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
@@ -190,7 +191,6 @@ export class CloudClient {
         controller.abort(error);
         rejectTimeout(error);
       }, ms);
-      if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
     };
     restartTimeout();
 

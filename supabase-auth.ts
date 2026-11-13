@@ -156,6 +156,7 @@ export class SupabaseAuthClient {
     headers.set("apikey", this.options.anonKey);
     headers.set("content-type", "application/json");
     const controller = new AbortController();
+    // The awaited request owns its deadline until finally clears it.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
@@ -166,7 +167,6 @@ export class SupabaseAuthClient {
         controller.abort(error);
         reject(error);
       }, this.requestTimeoutMs);
-      if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
     });
     try {
       const request = Promise.resolve().then(async () => {
