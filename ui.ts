@@ -772,6 +772,22 @@ export async function handleUiRequest(
     });
   }
 
+  if (pathname === "/ui/api/profile-order" && (req.method === "GET" || req.method === "POST")) {
+    const cloudMode = options.appConfig?.read().mode === "cloud" || !!options.cloudBrowser;
+    const account = cloudMode ? options.cloudConnection?.accountId() : undefined;
+    if (cloudMode && !account) return noStoreJson({ ok: false, error: "Sign in to arrange Cloud profiles" }, 401);
+    const scope = cloudMode ? `cloud:${account}` : remote ? "remote" : "local";
+    if (req.method === "GET") return noStoreJson({ ok: true, ids: store.getProfileOrder(scope) });
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    const body = await req.json().catch(() => null) as { ids?: unknown } | null;
+    if (!Array.isArray(body?.ids) || body.ids.length > 10000 || body.ids.some((id) => !isSafeProfileId(id)) || new Set(body.ids).size !== body.ids.length) {
+      return noStoreJson({ ok: false, error: "Profile order must contain unique valid profile IDs (maximum 10000)" }, 400);
+    }
+    store.setProfileOrder(scope, body.ids);
+    return noStoreJson({ ok: true, ids: body.ids });
+  }
+
   if (pathname === "/ui/api/shell-language" && req.method === "GET") {
     return noStoreJson({ language: readShellLanguage(options.paths) });
   }

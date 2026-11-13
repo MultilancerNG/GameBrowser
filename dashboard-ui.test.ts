@@ -522,7 +522,7 @@ test("the custom NO. editor is Local-only and digits-only", () => {
 });
 
 test("the roster is sortable, pageable and its columns are selectable", () => {
-  expect(app).toContain("const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: \"no\", dir: 1 });");
+  expect(app).toContain("const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: \"manual\", dir: 1 });");
   expect(app).toContain("current.key === key ? { key, dir: current.dir === 1 ? -1 : 1 } : { key, dir: 1 }");
   // A running browser is the row an operator acts on next, so it outranks the sort column.
   expect(app).toContain("if (a.running !== b.running) return a.running ? -1 : 1;");
@@ -796,7 +796,7 @@ test("roster columns declare their own width and never collapse", () => {
   // One registry drives the header cells and the table's min-width, so a column
   // cannot be squeezed below a readable size.
   expect(app).toContain('{ key: "name", label: "Name", sort: true, width: 220 }');
-  expect(app).toContain("const CHECKBOX_COLUMN_WIDTH = 44;");
+  expect(app).toContain("const CHECKBOX_COLUMN_WIDTH = 72;");
   expect(app).toContain("const tableMinWidth = CHECKBOX_COLUMN_WIDTH + shownColumns.reduce((total, column) => total + column.width, 0);");
   expect(app).toContain('style={{ minWidth: tableMinWidth }}');
   // Every column declares a width, so a wide window's extra space spreads

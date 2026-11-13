@@ -5179,3 +5179,40 @@ test("profile and folder sharing is restricted to workspace owners and admins", 
     }
   } finally { s.close(); }
 });
+
+test("workspace profile ordering persists and rejects invalid or cross-origin writes", async () => {
+  const s = store();
+  const request = (ids: unknown, origin?: string) => new Request("http://x/ui/api/profile-order", {
+    method: "POST", headers: { "content-type": "application/json", ...(origin ? { origin } : {}) }, body: JSON.stringify({ ids }),
+  });
+  try {
+    expect((await handleUiRequest(request(["p2", "p1"]), {} as any, s))!.status).toBe(200);
+    const saved = await handleUiRequest(new Request("http://x/ui/api/profile-order"), {} as any, s);
+    expect(await saved!.json()).toEqual({ ok: true, ids: ["p2", "p1"] });
+    expect((await handleUiRequest(request(["p1", "p1"]), {} as any, s))!.status).toBe(400);
+    expect((await handleUiRequest(request(["../bad"]), {} as any, s))!.status).toBe(400);
+    expect((await handleUiRequest(request(["p1"], "https://outside.test"), {} as any, s))!.status).toBe(403);
+    expect(s.getProfileOrder("local")).toEqual(["p2", "p1"]);
+  } finally { s.close(); }
+});
+
+test("Cloud profile order is isolated by the signed-in account and from Local mode", async () => {
+  const s = store();
+  let account = "account-one";
+  const options = { cloudBrowser: {} as any, cloudConnection: { accountId: () => account } as unknown as CloudConnectionRuntime };
+  try {
+    await handleUiRequest(new Request("http://x/ui/api/profile-order", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids: ["cloud2", "cloud1"] }),
+    }), {} as any, s, null, options);
+    account = "account-two";
+    const second = await handleUiRequest(new Request("http://x/ui/api/profile-order"), {} as any, s, null, options);
+    expect(await second!.json()).toEqual({ ok: true, ids: [] });
+    const local = await handleUiRequest(new Request("http://x/ui/api/profile-order"), {} as any, s);
+    expect(await local!.json()).toEqual({ ok: true, ids: [] });
+    account = "account-one";
+    const first = await handleUiRequest(new Request("http://x/ui/api/profile-order"), {} as any, s, null, options);
+    expect(await first!.json()).toEqual({ ok: true, ids: ["cloud2", "cloud1"] });
+    account = "";
+    expect((await handleUiRequest(new Request("http://x/ui/api/profile-order"), {} as any, s, null, options))!.status).toBe(401);
+  } finally { s.close(); }
+});

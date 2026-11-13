@@ -53,7 +53,30 @@ jobs:
           "ALIASMODE_FIREFOX_ARCHIVE=$((Resolve-Path $archive).Path)" >> $env:GITHUB_ENV
           "ALIASMODE_FIREFOX_ARCHIVE_SHA256=$sha" >> $env:GITHUB_ENV
           "ALIASMODE_FIREFOX_EXECUTABLE_SHA256=$exeSha" >> $env:GITHUB_ENV
-      - run: bun run desktop:prepare
+      - name: Prepare bundle with verified baseline Bun
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'bun-windows-x64-baseline.zip'
+          $root = Join-Path $env:RUNNER_TEMP 'bun-windows-x64-baseline'
+          Invoke-WebRequest 'https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip' -OutFile $zip
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -cne '23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be') { throw 'Baseline Bun archive checksum mismatch' }
+          Expand-Archive $zip $root -Force
+          $candidates = @(Get-ChildItem $root -Recurse -File -Filter bun.exe)
+          if ($candidates.Count -ne 1) { throw 'Expected one baseline Bun executable' }
+          $baseline = $candidates[0].FullName
+          if ((& $baseline --version).Trim() -cne '1.2.21') { throw 'Baseline Bun version mismatch' }
+          $output = & $baseline scripts/prepare-windows-bundle.ts 2>&1
+          $result = $LASTEXITCODE
+          $output | ForEach-Object { Write-Output $_ }
+          if ($result -ne 0) {
+            $output | Select-Object -Last 10 | ForEach-Object {
+              $line = ([string]$_).Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Windows bundle preparation::$line"
+            }
+            exit $result
+          }
       - name: Build full and slim Windows installers
         shell: pwsh
         run: |

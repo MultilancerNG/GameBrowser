@@ -147,6 +147,21 @@ export async function fetchShellLanguage(): Promise<string | null> {
   return typeof body.language === "string" && body.language.length > 0 ? body.language : null;
 }
 
+export async function fetchProfileOrder(): Promise<string[]> {
+  const response = await fetch("/ui/api/profile-order");
+  const body = await apiJson(response, "/ui/api/profile-order");
+  if (!response.ok || body.ok !== true || !Array.isArray(body.ids)) throw new Error(body.error || "Could not load profile order");
+  return body.ids;
+}
+
+export async function saveProfileOrder(ids: string[]): Promise<void> {
+  const response = await fetch("/ui/api/profile-order", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }),
+  });
+  const body = await apiJson(response, "/ui/api/profile-order");
+  if (!response.ok || body.ok !== true) throw new Error(body.error || "Could not save profile order");
+}
+
 export async function saveShellLanguage(language: string): Promise<void> {
   const path = "/ui/api/shell-language";
   const response = await fetch(path, {

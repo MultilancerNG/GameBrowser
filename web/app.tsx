@@ -1,3 +1,4 @@
+import { moveProfile, orderedProfileIds, selectionRanks } from "./profile-order.ts";
 import { VIEWPORT_PRESETS } from "./viewport-presets.ts";
 import { Channel } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -60,6 +61,8 @@ import {
   selectAppMode,
   saveServicesHidden,
   fetchProfiles,
+  fetchProfileOrder,
+  saveProfileOrder,
   serialLoader,
   fetchHealth,
   fetchDiskSpace,
@@ -196,10 +199,10 @@ const COLUMNS = [
 ] as const;
 
 /** Width of the always-present select-all checkbox column. */
-const CHECKBOX_COLUMN_WIDTH = 44;
+const CHECKBOX_COLUMN_WIDTH = 72;
 
 type ColumnKey = (typeof COLUMNS)[number]["key"];
-type SortKey = ColumnKey | "status";
+type SortKey = ColumnKey | "status" | "manual";
 
 const THEMES = [
   { key: "system", label: "System", icon: "laptop" },
@@ -344,6 +347,7 @@ const ICONS = {
   chevronRight: <path d="M9 6l6 6-6 6" />,
   chevronDown: <path d="M6 9l6 6 6-6" />,
   chevronLeft: <path d="M15 6l-6 6 6 6" />,
+  grip: <><circle cx="9" cy="6" r="1" /><circle cx="15" cy="6" r="1" /><circle cx="9" cy="12" r="1" /><circle cx="15" cy="12" r="1" /><circle cx="9" cy="18" r="1" /><circle cx="15" cy="18" r="1" /></>,
   sort: <path d="M8 9l4-4 4 4M8 15l4 4 4-4" />,
   sortUp: <path d="M7 14l5-5 5 5" />,
   sortDown: <path d="M7 10l5 5 5-5" />,
@@ -1311,7 +1315,7 @@ function App() {
   const [group, setGroup] = useState("all");
   const [profilePage, setProfilePage] = useState(0);
   const [pageSize, setPageSize] = useState(readPageSize);
-  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "no", dir: 1 });
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "manual", dir: 1 });
   const [hiddenCols, setHiddenCols] = useState<Set<ColumnKey>>(readHiddenColumns);
   const [colsOpen, setColsOpen] = useState(false);
   const [nodesOpen, setNodesOpen] = useState(false);
@@ -1331,6 +1335,11 @@ function App() {
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [profileOrder, setProfileOrder] = useState<string[]>([]);
+  const [orderReady, setOrderReady] = useState(false);
+  const [orderSaving, setOrderSaving] = useState(false);
+  const orderInFlight = useRef(false);
+  const draggedProfile = useRef<string | null>(null);
   const deleteInFlight = useRef(false);
   const rosterLoader = useRef(serialLoader(() => loadRoster()));
   // Active profile export: null when idle, otherwise how far the server-side
@@ -2307,6 +2316,25 @@ function App() {
     return map;
   }, [profiles]);
 
+  useEffect(() => {
+    let active = true;
+    setProfileOrder([]);
+    setOrderReady(false);
+    setOrderSaving(false);
+    orderInFlight.current = false;
+    if (workspaceReady) void fetchProfileOrder().then((ids) => {
+      if (active) { setProfileOrder(ids); setOrderReady(true); }
+    }).catch((error) => { if (active) setActionErr(String(error)); });
+    return () => { active = false; };
+  }, [workspaceReady, isCloudMode, cloudAuth?.user?.id, cloudAuth?.workspace?.id]);
+
+  const selectedRanks = useMemo(() => selectionRanks(selected), [selected]);
+  const savedRanks = useMemo(() => new Map(profileOrder.map((id, index) => [id, index])), [profileOrder]);
+  const activeProfileId = useMemo(() => {
+    const available = new Set(profiles.map((profile) => profile.id));
+    return [...selected].reverse().find((id) => available.has(id));
+  }, [profiles, selected]);
+
   const sortField = (p: UiProfile, key: SortKey): string | number => {
     switch (key) {
       case "no": return Number(numbering.get(p.id)?.value ?? 0);
@@ -2334,17 +2362,50 @@ function App() {
       }
       return true;
     });
-    // Running profiles stay on top regardless of the chosen column: an open
-    // browser is the row an operator acts on next.
+    // Running profiles stay on top within column sorts. Selection takes
+    // priority; manual layout keeps the order chosen by the operator.
     return matched.sort((a, b) => {
-      if (a.running !== b.running) return a.running ? -1 : 1;
-      const left = sortField(a, sort.key);
-      const right = sortField(b, sort.key);
+      const selectedLeft = selectedRanks.get(a.id) ?? Infinity;
+      const selectedRight = selectedRanks.get(b.id) ?? Infinity;
+      if (selectedLeft !== selectedRight) return selectedLeft < selectedRight ? -1 : 1;
+      if (sort.key === "manual") {
+        const leftRank = savedRanks.get(a.id) ?? Infinity;
+        const rightRank = savedRanks.get(b.id) ?? Infinity;
+        if (leftRank !== rightRank) return leftRank < rightRank ? -1 : 1;
+      } else {
+        if (a.running !== b.running) return a.running ? -1 : 1;
+      }
+      const left = sortField(a, sort.key === "manual" ? "no" : sort.key);
+      const right = sortField(b, sort.key === "manual" ? "no" : sort.key);
       if (left < right) return -sort.dir;
       if (left > right) return sort.dir;
       return a.id.localeCompare(b.id);
     });
-  }, [profiles, group, sharedOnly, sharedProfiles, selectedScope, q, sort, numbering]);
+  }, [profiles, group, sharedOnly, sharedProfiles, selectedScope, q, sort, numbering, selectedRanks, savedRanks]);
+
+  const arrangeProfile = async (source: string, target: string, after = false) => {
+    if (!orderReady || orderInFlight.current || source === target) return;
+    const ids = orderedProfileIds(profiles, sort.key === "manual" ? profileOrder : filtered.map((profile) => profile.id));
+    const next = moveProfile(ids, source, target, after);
+    if (next.every((id, index) => id === ids[index])) return;
+    const generation = authGeneration.current;
+    orderInFlight.current = true;
+    setOrderSaving(true);
+    setActionErr(null);
+    try {
+      await saveProfileOrder(next);
+      if (generation !== authGeneration.current) return;
+      setProfileOrder(next);
+      setSort({ key: "manual", dir: 1 });
+      if (selected.has(source) && selected.has(target)) {
+        setSelected((current) => new Set(moveProfile([...current].reverse(), source, target, after).reverse()));
+      }
+    } catch (error) {
+      if (generation === authGeneration.current) setActionErr(String(error));
+    } finally {
+      if (generation === authGeneration.current) { orderInFlight.current = false; setOrderSaving(false); }
+    }
+  };
 
   const profilePageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const visibleProfilePage = Math.min(profilePage, profilePageCount - 1);
@@ -2444,13 +2505,15 @@ function App() {
   ];
   const groupDefaultProfileCount = profiles.filter((profile) => profile.group === groupDefaultName).length;
 
-  const toggle = (id: string) =>
+  const toggle = (id: string) => {
     setSelected((s) => {
       const n = new Set(s);
       if (n.has(id)) n.delete(id);
       else n.add(id);
       return n;
     });
+    setProfilePage(0);
+  };
   const allVisibleSelected = visibleProfiles.length > 0 && visibleProfiles.every((p) => selected.has(p.id));
   const selectedFilteredCount = filtered.filter((p) => selected.has(p.id)).length;
   const selectedOutsideFilter = selected.size - selectedFilteredCount;
@@ -3904,6 +3967,8 @@ function App() {
               {allFilteredSelected ? t("All {scope} selected", { scope: selectionScope }) : t("Select all {scope}", { scope: selectionScope })}
             </button>
             <span className="muted">{deleting ? t("Moving selected profiles…") : t("Across all pages")}</span>
+            <span className="muted">{orderSaving ? "Saving order…" : "Drag handles to arrange · selected profile appears first"}</span>
+            {sort.key !== "manual" && <button type="button" className="btn ghost" onClick={() => setSort({ key: "manual", dir: 1 })}>Saved order</button>}
             {!allFilteredSelected && selectedOutsideFilter > 0 && <span className="muted">{t("This replaces your selection, excluding {count} outside this view.", { count: selectedOutsideFilter })}</span>}
           </div>
         )}
@@ -4035,8 +4100,15 @@ function App() {
                 // session stay read-only — that writer owns the profile.
                 const canEditRow = !isCloudMode || (p.permission === "edit" && !p.lockedBy);
                 return (
-                <tr key={p.id} className={`${p.running ? "running" : ""}${selected.has(p.id) ? " selected" : ""}`}>
+                <tr key={p.id} data-profile-id={p.id} className={`${p.running ? "running" : ""}${selected.has(p.id) ? ` selected ${p.id === activeProfileId ? "profile-admin" : "profile-follower"}` : ""}`}
+                  onDragOver={(event) => { if (draggedProfile.current && draggedProfile.current !== p.id) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; event.currentTarget.classList.add("profile-drop-target"); } }}
+                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) event.currentTarget.classList.remove("profile-drop-target"); }}
+                  onDrop={(event) => { event.preventDefault(); event.currentTarget.classList.remove("profile-drop-target"); const source = draggedProfile.current; draggedProfile.current = null; if (source) void arrangeProfile(source, p.id, event.clientY > event.currentTarget.getBoundingClientRect().top + event.currentTarget.offsetHeight / 2); }}>
                   <td className="chk">
+                    <button type="button" className="profile-drag-handle" draggable={orderReady && !orderSaving} disabled={!orderReady || orderSaving} aria-label={`Reorder ${p.name}`} title="Drag to reorder. Arrow Up or Arrow Down moves this profile."
+                      onDragStart={(event) => { draggedProfile.current = p.id; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", p.id); }}
+                      onDragEnd={() => { draggedProfile.current = null; document.querySelectorAll(".profile-drop-target").forEach((row) => row.classList.remove("profile-drop-target")); }}
+                      onKeyDown={(event) => { if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return; event.preventDefault(); const target = filtered[filtered.findIndex((profile) => profile.id === p.id) + (event.key === "ArrowUp" ? -1 : 1)]; if (target) void arrangeProfile(p.id, target.id, event.key === "ArrowDown"); }}><Icon name="grip" className="sm" /></button>
                     <input type="checkbox" aria-label={`Select ${p.name}`} checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
                   </td>
                   {columnVisible("no") && (
@@ -4047,7 +4119,7 @@ function App() {
                   {columnVisible("name") && (
                     <td className="col-name" title={`${p.name}\n${p.id}`}>
                       <span className="name-cell">
-                        <span className="n">{p.name}<FingerprintBadge p={p} /></span>
+                        <span className="n">{p.name}<FingerprintBadge p={p} />{selected.has(p.id) && <span className="profile-role">{p.id === activeProfileId ? "Admin" : "Follower"}</span>}</span>
                         <span className="sub">
                           {p.id}
                           <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>

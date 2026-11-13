@@ -16,4 +16,4 @@ MIT License. The full license text is in firefox-data/LICENSE.
 
 GameBrowser adaptation developed by Solomon Gbeta (https://solomon.ng).
 Based on aliasmode/aliasmode commit 0361bf4d4c53c993e5df80f1e7a2b6e9eb8a3538.
-Modifications: GameBrowser branding, viewport preset selector, Windows distribution and landing page, admin sharing checks, stored fingerprint seed collision checks, and Windows MCP discovery.
+Modifications: GameBrowser branding, viewport preset selector, Windows distribution and landing page, admin sharing checks, stored fingerprint seed collision checks, Windows MCP discovery, persistent profile arrangement, and Admin/Follower selection styling.

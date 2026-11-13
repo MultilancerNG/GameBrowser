@@ -23,6 +23,12 @@ The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to
 
 Engine names, internal executable names (`aliasmode-sidecar`, `aliasmode-mcp`), protocol names and environment variables are retained for runtime compatibility. The desktop executable is `gamebrowser.exe`; the application, installer product and landing page are branded GameBrowser. Windows agent discovery uses the separate `ng.solomon.gamebrowser` data directory.
 
+## Profile workspace
+
+Drag a profile’s handle to arrange profiles, or focus the handle and use Arrow Up / Arrow Down. Manual order is saved in the local database across application restarts, separately for Local mode and each signed-in Cloud account. It is a device preference, not a Cloud-synchronized workspace setting. Column sorting is still available; **Saved order** restores the manual layout.
+
+The last selected profile moves to the top and has a violet **Admin** highlight. Other selected profiles have teal **Follower** borders. These labels identify selection roles in the workspace; account authorization still uses Cloud owner/admin/member permissions. Clearing selection returns to the saved manual order.
+
 ## Windows development
 
 Install Bun **1.2.21**, Rust **1.89**, Visual Studio C++ Build Tools and the Windows SDK. Then:

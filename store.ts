@@ -77,6 +77,7 @@ export class ProfileStore {
       /* column already exists */
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS profiles_fingerprint_seed ON profiles(fingerprint_seed)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS profile_orders (scope TEXT PRIMARY KEY, ids_json TEXT NOT NULL)");
     // Cookies added while the profile was closed. The next launch sets them, then clears them.
     try {
       this.db.exec(`ALTER TABLE profiles ADD COLUMN pending_cookies_json TEXT NOT NULL DEFAULT '[]'`);
@@ -504,6 +505,16 @@ export class ProfileStore {
   /** Include Trash: restoring a profile must not reuse a new profile's identity. */
   hasFingerprintSeed(seed: number): boolean {
     return !!this.db.query("SELECT 1 FROM profiles WHERE fingerprint_seed = ? LIMIT 1").get(seed);
+  }
+
+  getProfileOrder(scope: string): string[] {
+    const row = this.db.query<{ ids_json: string }, [string]>("SELECT ids_json FROM profile_orders WHERE scope = ?").get(scope);
+    return row ? JSON.parse(row.ids_json) : [];
+  }
+
+  setProfileOrder(scope: string, ids: string[]): void {
+    this.db.query("INSERT INTO profile_orders (scope, ids_json) VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET ids_json=excluded.ids_json")
+      .run(scope, JSON.stringify(ids));
   }
 
   listProfiles(): Profile[] {
