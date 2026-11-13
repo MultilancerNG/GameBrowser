@@ -1,0 +1,380 @@
+/**
+ * AdsPower-compatible PROFILE MANAGEMENT facade (`/api/v1/group/list`,
+ * `/api/v1/group/create`, `/api/v1/user/{list,create,delete,update}`).
+ *
+ * server.ts covers AdsPower's browser-control routes (the only ones automation
+ * needs). This module covers the lifecycle routes a full AdsPower REST client
+ * uses — e.g. the Python profile-create-login tool — so that tool migrates to
+ * aliasmode by repointing its base URL alone, no client rewrite.
+ *
+ * Served in BOTH modes. Standalone: against the local store. Remote (HUB_URL set):
+ * create/list/delete/group route through the hub coordinator — the same central
+ * roster the dashboard and automation use — so a hub-connected box stays the single
+ * source of truth (creating against the local launch cache would silently diverge).
+ *
+ * Shapes are dictated by what the Python client (adspower_api.py) parses:
+ *   group/list  -> data.list[].{group_id, group_name}
+ *   user/list   -> data.list[].{user_id, name, created_time, last_open_time, serial_number}
+ *   user/create -> data.id
+ *   user/delete -> code === 0
+ *   user/update -> code === 0 (name, credentials and user_proxy_config are each optional)
+ */
+
+import type { Launcher } from "./launcher.ts";
+import type { ProfileStore } from "./store.ts";
+import type { RemoteCoordinator } from "./remote.ts";
+import type { Profile, ProxySpec } from "./types.ts";
+import { buildNewProfile, type NewProfileInput } from "./create.ts";
+import { attachTimezones, lookupExitLocation } from "./geoip.ts";
+import { normalizeProxySpec, proxyIdentityKey } from "./proxy.ts";
+import { syncFirefoxTimezone } from "./firefox-config.ts";
+import { isValidProfileName } from "./profile-validation.ts";
+
+/** Best-effort geoip fetch, injectable for tests; defaults to real ip-api.com. */
+type GeoipFetch = (url: string, init: RequestInit) => Promise<{ json(): Promise<any> }>;
+
+function ok(data?: unknown) {
+  return Response.json({ code: 0, msg: "success", data: data ?? {} });
+}
+function fail(msg: string) {
+  return Response.json({ code: -1, msg, data: {} });
+}
+
+/**
+ * AdsPower's default/un-grouped bucket is id "0"; aliasmode stores ungrouped
+ * profiles with an empty label. Map both "0" and "" to "" on the way in/out so
+ * create→list round-trips and group filtering stay symmetric.
+ */
+/** Authoritative roster, with optional Cloud folder and profile creation operations. */
+export interface ProfileRoster {
+  listProfiles(): Promise<Array<{ id: string; name: string; group: string }>>;
+  listGroups?(): Promise<string[]>;
+  createGroup?(name: string): Promise<void>;
+  createProfile?(profile: Profile): Promise<{ id: string }>;
+  updateProfile?(id: string, edits: ProfileEdits): Promise<void>;
+}
+
+/** Fields `user/update` may change: the browser name, saved account credentials and the proxy. */
+export type ProfileEdits = Partial<Pick<Profile, "name" | "username" | "password" | "email" | "emailPassword" | "twofa" | "proxy">>;
+
+function normalizeGroup(g: unknown): string {
+  const s = String(g ?? "").trim();
+  return s === "0" ? "" : s;
+}
+
+function intParam(raw: string | null, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+/** AdsPower account/proxy/fingerprint fields → aliasmode NewProfileInput. */
+function inputFromCreateBody(body: any): NewProfileInput {
+  const px = body?.user_proxy_config;
+  const hasProxy = px && px.proxy_host && String(px.proxy_host).trim();
+  // AdsPower screen_resolution is "1920_1080"; aliasmode's create wants "1920x1080".
+  const screenRaw = body?.fingerprint_config?.screen_resolution;
+  return {
+    name: typeof body?.name === "string" ? body.name : "",
+    group: normalizeGroup(body?.group_id),
+    platform: typeof body?.domain_name === "string" ? body.domain_name : "",
+    username: typeof body?.username === "string" ? body.username : "",
+    password: typeof body?.password === "string" ? body.password : "",
+    email: typeof body?.email === "string" ? body.email : "",
+    emailPassword: typeof body?.email_password === "string"
+      ? body.email_password
+      : (typeof body?.emailPassword === "string" ? body.emailPassword : ""),
+    twofa: typeof body?.fakey === "string"
+      ? body.fakey
+      : (typeof body?.twofa === "string" ? body.twofa : ""),
+    proxy: hasProxy
+      ? {
+          type: String(px.proxy_type || "http"),
+          host: String(px.proxy_host).trim(),
+          port: String(px.proxy_port ?? ""),
+          user: String(px.proxy_user ?? ""),
+          pass: String(px.proxy_password ?? ""),
+        }
+      : null,
+    screen: typeof screenRaw === "string" ? screenRaw.replace(/_/g, "x") : "",
+    // AliasMode fields. This API's contract is a CDP WebSocket, so a request that names no
+    // engine gets Chromium on every computer.
+    engine: body?.engine || "chromium",
+    ...(body?.chromium_runtime ? { chromiumRuntime: body.chromium_runtime } : {}),
+  };
+}
+
+function hasCredentialUpdate(body: any): boolean {
+  return ["username", "password", "email", "email_password", "emailPassword", "fakey", "twofa"]
+    .some((field) => typeof body?.[field] === "string");
+}
+
+/** AdsPower `user_proxy_config` on update. `proxy_soft: "no_proxy"` removes the proxy. */
+function proxyFromUpdateConfig(px: any): ProxySpec | null {
+  if (px.proxy_soft === "no_proxy") return null;
+  const proxy = normalizeProxySpec({
+    type: String(px.proxy_type || "http"),
+    host: String(px.proxy_host ?? ""),
+    port: String(px.proxy_port ?? ""),
+    user: String(px.proxy_user ?? ""),
+    pass: String(px.proxy_password ?? ""),
+  });
+  if (!proxy) throw new Error('user_proxy_config needs proxy_host and proxy_port, or proxy_soft "no_proxy" to remove the proxy');
+  return proxy;
+}
+
+function editsFromUpdateBody(body: any): ProfileEdits {
+  const edits: ProfileEdits = {};
+  if (typeof body?.name === "string") edits.name = body.name;
+  if (typeof body?.username === "string") edits.username = body.username;
+  if (typeof body?.password === "string") edits.password = body.password;
+  if (typeof body?.email === "string") edits.email = body.email;
+  if (typeof body?.email_password === "string") edits.emailPassword = body.email_password;
+  else if (typeof body?.emailPassword === "string") edits.emailPassword = body.emailPassword;
+  if (typeof body?.fakey === "string") edits.twofa = body.fakey;
+  else if (typeof body?.twofa === "string") edits.twofa = body.twofa;
+  if (body?.user_proxy_config && typeof body.user_proxy_config === "object") edits.proxy = proxyFromUpdateConfig(body.user_proxy_config);
+  return edits;
+}
+
+/** A new proxy's exit timezone, as the Edit dialog looks it up. Null when the proxy stays or the user typed a timezone. */
+export async function exitTimezoneForEdit(profile: Profile, edits: ProfileEdits, geoipFetch?: GeoipFetch): Promise<string | null> {
+  if (!edits.proxy || profile.timezoneManual || proxyIdentityKey(edits.proxy) === proxyIdentityKey(profile.proxy)) return null;
+  return (await lookupExitLocation(edits.proxy, geoipFetch))?.timezone ?? null;
+}
+
+export function profileWithEdits(profile: Profile, edits: ProfileEdits, timezone: string | null = null): Profile {
+  const next = { ...profile, ...edits };
+  if ("proxy" in edits) delete next.proxyError;
+  if (timezone) {
+    next.timezone = timezone;
+    syncFirefoxTimezone(next);
+  }
+  return next;
+}
+
+/**
+ * Handle an AdsPower profile-management request. Returns null for any path this
+ * module doesn't own, so web.ts falls through to the browser-control handler.
+ * When `remote` is set, central edits route through the hub coordinator.
+ */
+export async function handleUserApi(
+  req: Request,
+  launcher: Launcher,
+  store: ProfileStore,
+  remote?: RemoteCoordinator | null,
+  geoipFetch?: GeoipFetch,
+  roster: ProfileRoster | null = remote ?? null,
+): Promise<Response | null> {
+  const { pathname, searchParams } = new URL(req.url);
+
+  // --- groups: id == name (aliasmode has no group ids) ---
+  if (pathname === "/api/v1/group/list" && req.method === "GET") {
+    const page = intParam(searchParams.get("page"), 1);
+    const pageSize = intParam(searchParams.get("page_size"), 100);
+    // Cloud: authoritative folders, including empty ones. Remote: profile labels.
+    // Standalone: registry ∪ profile labels.
+    const names = roster?.listGroups
+      ? (await roster.listGroups()).sort()
+      : roster
+        ? [...new Set((await roster.listProfiles()).map((p) => normalizeGroup(p.group)).filter((g) => g))].sort()
+        : store.listGroups();
+    const list = names.slice((page - 1) * pageSize, page * pageSize).map((g) => ({ group_id: g, group_name: g }));
+    return ok({ list, page, page_size: pageSize });
+  }
+
+  // --- create a folder up front (AdsPower group/create); idempotent, id == name ---
+  if (pathname === "/api/v1/group/create" && req.method === "POST") {
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return fail("invalid JSON body");
+    }
+    const name = String(body?.group_name ?? "").trim();
+    if (!name) return fail("missing group_name");
+    // Remote: the hub has no empty-group registry; the folder materializes when a
+    // profile is created/moved into it (id == name, so this is enough for the
+    // create flow). Standalone: persist it so empty folders list immediately.
+    if (!remote) {
+      if (roster?.createGroup) await roster.createGroup(name);
+      else store.registerGroup(name);
+    }
+    return ok({ group_id: name });
+  }
+
+  // --- list profiles (optionally by group), AdsPower envelope ---
+  if (pathname === "/api/v1/user/list" && req.method === "GET") {
+    const page = intParam(searchParams.get("page"), 1);
+    const pageSize = intParam(searchParams.get("page_size"), 100);
+    // Remote/Cloud: map the roster (no timestamps → 0). Standalone: the local store.
+    let rows = roster
+      // A roster carries no local measurement, so its rows report no
+      // verdict rather than a misleading empty-means-verified one.
+      ? (await roster.listProfiles()).map((p, i) => ({ id: p.id, name: p.name, group: p.group, createdAt: 0, lastOpenAt: 0, serial: i + 1, fpVerdict: "", fpCapturedAt: "" }))
+      : store.listUserRecords();
+
+    const groupId = searchParams.get("group_id");
+    if (groupId != null) {
+      const want = normalizeGroup(groupId);
+      rows = rows.filter((r) => normalizeGroup(r.group) === want);
+    }
+    // AdsPower's user_id filter: clients look a single profile up by id and read list[0].
+    const userId = searchParams.get("user_id");
+    if (userId) rows = rows.filter((r) => r.id === userId);
+
+    // Honor AdsPower's user_sort={"created_time"|"last_open_time":"asc"|"desc"}.
+    // (No-op on the remote roster, which carries no timestamps.)
+    const sortRaw = searchParams.get("user_sort");
+    if (sortRaw) {
+      try {
+        const s = JSON.parse(sortRaw) as Record<string, string>;
+        if (s.created_time) {
+          rows.sort((a, b) => (s.created_time === "asc" ? a.createdAt - b.createdAt : b.createdAt - a.createdAt));
+        } else if (s.last_open_time) {
+          rows.sort((a, b) => (s.last_open_time === "asc" ? a.lastOpenAt - b.lastOpenAt : b.lastOpenAt - a.lastOpenAt));
+        }
+      } catch {
+        /* malformed sort → keep insertion order */
+      }
+    }
+
+    const list = rows.slice((page - 1) * pageSize, page * pageSize).map((r) => ({
+      user_id: r.id,
+      name: r.name,
+      group_id: normalizeGroup(r.group),
+      serial_number: String(r.serial),
+      // AdsPower reports Unix SECONDS; our bookkeeping is ms. 0 stays 0 (unknown).
+      created_time: r.createdAt ? Math.floor(r.createdAt / 1000) : 0,
+      last_open_time: r.lastOpenAt ? Math.floor(r.lastOpenAt / 1000) : 0,
+      // Additive: existing AdsPower clients ignore unknown fields. "" means
+      // there was no imported attestation to check this profile against.
+      fp_verdict: r.fpVerdict,
+      fp_captured_at: r.fpCapturedAt,
+    }));
+    return ok({ list, page, page_size: pageSize });
+  }
+
+  // --- create: AdsPower payload -> aliasmode profile (fingerprint from seed) ---
+  if (pathname === "/api/v1/user/create" && req.method === "POST") {
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return fail("invalid JSON body");
+    }
+    const input = inputFromCreateBody(body);
+    try {
+      if (remote && input.chromiumRuntime) throw new Error("AliasMode Chromium is unavailable in legacy Remote mode");
+      if (remote) {
+        // Hub owns id generation, fingerprint seed, and geoip timezone.
+        const { id } = await remote.createProfile(input);
+        return ok({ id });
+      }
+      const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
+      // Match the browser clock to the proxy's geo, exactly as /ui/api create and
+      // AdsPower's automatic_timezone do. Best-effort: never fail create on geoip.
+      if (profile.proxy) {
+        await attachTimezones([profile], geoipFetch, true).catch(() => {});
+        syncFirefoxTimezone(profile);
+      }
+      if (roster?.createProfile) return ok(await roster.createProfile(profile));
+      store.upsertProfile(profile);
+      return ok({ id: profile.id });
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  // --- delete ---
+  if (pathname === "/api/v1/user/delete" && req.method === "POST") {
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return fail("invalid JSON body");
+    }
+    const ids = Array.isArray(body?.user_ids) ? body.user_ids.map(String) : [];
+    if (remote) {
+      const r = await remote.deleteProfiles(ids); // hub deletes centrally (respects locks)
+      return ok({ deleted: r.deleted, locked: r.locked });
+    }
+    // Standalone: stop, remove the persistent user-data dir, drop the row.
+    let deleted = 0;
+    const locked: string[] = [];
+    for (const id of ids) {
+      if (!store.getProfile(id)) continue;
+      // stop() also waits for an in-flight start that has not recorded its
+      // launch row yet, so deletion cannot race a late browser spawn.
+      if ((await launcher.stop(id)) !== true) {
+        locked.push(id);
+        continue;
+      }
+      // The cache delete after stop() runs on; let it end before the folder is removed.
+      await launcher.cacheCleanupSettled(id);
+      // removeUserDataDir refuses any path outside the data root (a crafted or
+      // legacy "../" id), so rmSync can't escape; the row is dropped regardless.
+      launcher.removeUserDataDir(id);
+      store.deleteProfile(id);
+      deleted++;
+    }
+    return ok({ deleted, locked });
+  }
+
+  // --- update: browser name, saved account credentials and proxy ---
+  if (pathname === "/api/v1/user/update" && req.method === "POST") {
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return fail("invalid JSON body");
+    }
+    const id = typeof body?.user_id === "string" ? body.user_id : "";
+    if (!id) return fail("missing user_id");
+    if (body.name !== undefined && !isValidProfileName(body.name)) return fail("name must be a non-empty string");
+    let edits: ProfileEdits;
+    try {
+      edits = editsFromUpdateBody(body);
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e));
+    }
+    if (!Object.keys(edits).length) return fail("nothing to update: send name, account fields or user_proxy_config");
+    if (roster?.updateProfile) {
+      try {
+        await roster.updateProfile(id, edits);
+        return ok({});
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    }
+    if (remote) {
+      if ("proxy" in edits) return fail("proxy updates are unavailable in legacy Remote mode");
+      try {
+        if (!hasCredentialUpdate(body)) {
+          await remote.renameProfile(id, body.name);
+        } else {
+          const profile = await remote.getProfile(id);
+          await remote.saveProfile(profileWithEdits(profile, edits));
+        }
+        return ok({});
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    }
+    try {
+      const profile = store.getProfile(id);
+      if (!profile) return fail(`no such profile: ${id}`);
+      // An open browser keeps the timezone it launched with; its next launch looks the new proxy up.
+      const timezone = store.getLaunch(id) ? null : await exitTimezoneForEdit(profile, edits, geoipFetch);
+      // Apply to the current copy, so changes saved during the lookup are kept.
+      const current = store.getProfile(id);
+      if (!current) return fail(`no such profile: ${id}`);
+      store.upsertProfile(profileWithEdits(current, edits, store.getLaunch(id) ? null : timezone));
+      return ok({});
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return fail(`failed to persist profile update: ${message}`);
+    }
+  }
+
+  return null;
+}

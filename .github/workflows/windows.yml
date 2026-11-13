@@ -1,0 +1,80 @@
+name: GameBrowser Windows
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+  installer:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.89'
+      - run: bun install --frozen-lockfile
+      - name: Download and verify pinned upstream Firefox runtime
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force artifacts/firefox | Out-Null
+          $archive = 'artifacts/firefox/aliasmode-156.0.1-beta.36-win.x86_64.zip'
+          gh release download aliasmode-runtime-156.0.1-beta.36-r14 --repo aliasmode/aliasmode-firefox --pattern 'aliasmode-156.0.1-beta.36-win.x86_64.zip' --dir artifacts/firefox
+          if ($LASTEXITCODE -ne 0) { throw 'Runtime download failed' }
+          $sha = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -cne '23d2531f5a72dbfde049319259bcee55407a2ba7afc570398446da5c1f20cfcb') { throw 'Runtime checksum mismatch' }
+          $extracted = Join-Path $env:RUNNER_TEMP 'gamebrowser-firefox'
+          Expand-Archive $archive $extracted
+          $exe = @(Get-ChildItem $extracted -Recurse -File -Filter aliasmode.exe)
+          if ($exe.Count -ne 1) { throw 'Expected one Firefox executable' }
+          $exeSha = (Get-FileHash $exe[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "ALIASMODE_FIREFOX_ARCHIVE=$((Resolve-Path $archive).Path)" >> $env:GITHUB_ENV
+          "ALIASMODE_FIREFOX_ARCHIVE_SHA256=$sha" >> $env:GITHUB_ENV
+          "ALIASMODE_FIREFOX_EXECUTABLE_SHA256=$exeSha" >> $env:GITHUB_ENV
+      - run: bun run desktop:prepare
+      - name: Build full and slim Windows installers
+        shell: pwsh
+        run: |
+          ./scripts/build-windows-installer.ps1 full artifacts/windows
+          ./scripts/build-windows-installer.ps1 slim artifacts/windows
+          Get-ChildItem artifacts/windows/*.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)" | Add-Content artifacts/windows/SHA256SUMS.txt
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gamebrowser-windows-x64
+          path: artifacts/windows/
+          if-no-files-found: error
+      - name: Publish tagged Windows release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag must match application version' }
+          gh release create $env:GITHUB_REF_NAME artifacts/windows/* --verify-tag --title "GameBrowser $version" --notes 'Windows x64 beta. Developed by Solomon Gbeta (solomon.ng). Unsigned installers; verify SHA256SUMS.txt. Full includes WebView2; slim downloads WebView2 when needed. Based on AliasMode under Apache-2.0.' --prerelease
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

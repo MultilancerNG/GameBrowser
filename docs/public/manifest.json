@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "productVersion": "0.1.0-beta.74",
+  "openapi": {
+    "path": "local-api.openapi.json",
+    "sha256": "c00bf1aaf8807857abb14d7d8fdf0695ffb2f4da48fbd3833c8f4e8b19a82691"
+  },
+  "mcpCatalogs": {
+    "current-source": {
+      "path": "mcp-tools/current-source.json",
+      "sha256": "99a3d8462210476b1d4f4835f534b98b9cbdb0951efaaa4ffeffd1f1df6c1c64"
+    },
+    "0.1.0-beta.42": {
+      "path": "mcp-tools/0.1.0-beta.42.json",
+      "sha256": "a868580f141c2252e3102d66b64e0a98c5bcf1cf6705d4e31b8614e7a8d297bd"
+    },
+    "0.1.0-beta.47": {
+      "path": "mcp-tools/0.1.0-beta.47.json",
+      "sha256": "b9d76f95b60024b54db03db2fa72b2c741f7165872ffa725bb7afef2b0705170"
+    },
+    "0.1.0-beta.48": {
+      "path": "mcp-tools/0.1.0-beta.48.json",
+      "sha256": "756ad0a60bdcd120eed57738d86fb7d09b9e086dcd8876a5d820b5f39b0579f3"
+    },
+    "0.1.0-beta.49": {
+      "path": "mcp-tools/0.1.0-beta.49.json",
+      "sha256": "7eb9a9be8fb55551e51d0a5c957fb5aec58d44670fbdaaa507f97b3f6f6bcc79"
+    },
+    "0.1.0-beta.50": {
+      "path": "mcp-tools/0.1.0-beta.50.json",
+      "sha256": "57e242422d7cb13fb12c23ff8491378b35cd3a362f76a849017f95fafc0f013f"
+    },
+    "0.1.0-beta.51": {
+      "path": "mcp-tools/0.1.0-beta.51.json",
+      "sha256": "2e1b2622ea5085f1cafaa4c16a14e741a9e91b8fde71ad00795aa8b2d465cb88"
+    },
+    "0.1.0-beta.52": {
+      "path": "mcp-tools/0.1.0-beta.52.json",
+      "sha256": "1c79d46ec9bc2668298c94147df410bc579d805bb50e898454bbf391eb737aa5"
+    },
+    "0.1.0-beta.53": {
+      "path": "mcp-tools/0.1.0-beta.53.json",
+      "sha256": "d3b06b5da3b4b0431ca6ac5ffdc735a49a402bd957cf6c9440666830f9e518f8"
+    },
+    "0.1.0-beta.54": {
+      "path": "mcp-tools/0.1.0-beta.54.json",
+      "sha256": "776b75d258e3b3bda76bc58463cd23849cfd94661d01bc0121b8e8b56de578a8"
+    },
+    "0.1.0-beta.55": {
+      "path": "mcp-tools/0.1.0-beta.55.json",
+      "sha256": "841514847b404dcdcad5a9c01e053df53f90d53e07eef94a6ceef915ba0bff37"
+    },
+    "0.1.0-beta.56": {
+      "path": "mcp-tools/0.1.0-beta.56.json",
+      "sha256": "68e9367c35af1b9690194f1015e6c1875bed11f1fad4cec40f77eb8a62c088db"
+    },
+    "0.1.0-beta.57": {
+      "path": "mcp-tools/0.1.0-beta.57.json",
+      "sha256": "99c5a0af6a6f68ea90fa1a89b874b9033a0d55f02f2ea67a13d0bad31a197528"
+    },
+    "0.1.0-beta.58": {
+      "path": "mcp-tools/0.1.0-beta.58.json",
+      "sha256": "902ae539d3fe8a8017b9d06797651f549fee56a0d8a02797f585ed948d5ef9c4"
+    },
+    "0.1.0-beta.59": {
+      "path": "mcp-tools/0.1.0-beta.59.json",
+      "sha256": "b27632d2ca55f4a8a9f0d8cbc55671b6d962cd2a5c4ba9a7474823d3bfbc516f"
+    },
+    "0.1.0-beta.60": {
+      "path": "mcp-tools/0.1.0-beta.60.json",
+      "sha256": "9284c47e39b0f2d991c3e5a15ee406b6eeda7a0f3dee63129695209d84dc025a"
+    },
+    "0.1.0-beta.61": {
+      "path": "mcp-tools/0.1.0-beta.61.json",
+      "sha256": "ceada9334410587eadeff86d4358550ae12c238d919c4fd7569b5c63abce8035"
+    },
+    "0.1.0-beta.62": {
+      "path": "mcp-tools/0.1.0-beta.62.json",
+      "sha256": "09aa666425fb9576e06fac07477c59789a77e0a5963b0e5412359faeb1441d51"
+    },
+    "0.1.0-beta.63": {
+      "path": "mcp-tools/0.1.0-beta.63.json",
+      "sha256": "b5c85e3f748d6fed2b8e1e69ba5102da63c7c119ebf15b6d36d6edabc22955c7"
+    },
+    "0.1.0-beta.64": {
+      "path": "mcp-tools/0.1.0-beta.64.json",
+      "sha256": "e69828736ed806d02a276224fe14448cd4cd0ced4793294a3cb16cdcbf7bd74f"
+    },
+    "0.1.0-beta.65": {
+      "path": "mcp-tools/0.1.0-beta.65.json",
+      "sha256": "c8ef5fbf78daa2c51c30eb9dc67819300bb1e1c16aa37afdc02a10a1d6394ffd"
+    },
+    "0.1.0-beta.66": {
+      "path": "mcp-tools/0.1.0-beta.66.json",
+      "sha256": "90428e985dd2d42c239ba447991dc04b7738f3602ba853c14a629d2c8eb47f22"
+    },
+    "0.1.0-beta.67": {
+      "path": "mcp-tools/0.1.0-beta.67.json",
+      "sha256": "d48c83a20b081c4f9e6c38a270d7804f073d9ff351c60a0eec6bd993ac3136df"
+    },
+    "0.1.0-beta.68": {
+      "path": "mcp-tools/0.1.0-beta.68.json",
+      "sha256": "cd98f172c4dc2bab326a112c55599db56b5cd6784c26772f6adc05d50bd1cb75"
+    },
+    "0.1.0-beta.69": {
+      "path": "mcp-tools/0.1.0-beta.69.json",
+      "sha256": "42037ec5c20c2f33a52c1c6302f408d1b64bed6847f6372d7f3ea38bbfe2ee4b"
+    },
+    "0.1.0-beta.70": {
+      "path": "mcp-tools/0.1.0-beta.70.json",
+      "sha256": "ffa04a18d63202b926647ffbe19a66e9e4c045550f721031667c80e7aa07e51c"
+    },
+    "0.1.0-beta.71": {
+      "path": "mcp-tools/0.1.0-beta.71.json",
+      "sha256": "0a95481338514ed4517e7c94a42ed86a05a41f7d16e6bf8d4f3b529cf6f4226d"
+    },
+    "0.1.0-beta.72": {
+      "path": "mcp-tools/0.1.0-beta.72.json",
+      "sha256": "f7b1151c429ac4f8ee4f38c0493f61c8323d77bf7aaf4ee3c471a5a4bc9c729b"
+    },
+    "0.1.0-beta.73": {
+      "path": "mcp-tools/0.1.0-beta.73.json",
+      "sha256": "67e827f5bc75ee56a42974029faa85a714020f9ca4ebe4e888acf2d0dc4f2b07"
+    },
+    "0.1.0-beta.74": {
+      "path": "mcp-tools/0.1.0-beta.74.json",
+      "sha256": "3b9b619b3f7593f946820813331fc03ed04617b05decc1b3ba24bbf375e03a26"
+    }
+  },
+  "releasedVersions": [
+    "0.1.0-beta.42",
+    "0.1.0-beta.47",
+    "0.1.0-beta.48",
+    "0.1.0-beta.49",
+    "0.1.0-beta.50",
+    "0.1.0-beta.51",
+    "0.1.0-beta.52",
+    "0.1.0-beta.53",
+    "0.1.0-beta.54",
+    "0.1.0-beta.55",
+    "0.1.0-beta.56",
+    "0.1.0-beta.57",
+    "0.1.0-beta.58",
+    "0.1.0-beta.59",
+    "0.1.0-beta.60",
+    "0.1.0-beta.61",
+    "0.1.0-beta.62",
+    "0.1.0-beta.63",
+    "0.1.0-beta.64",
+    "0.1.0-beta.65",
+    "0.1.0-beta.66",
+    "0.1.0-beta.67",
+    "0.1.0-beta.68",
+    "0.1.0-beta.69",
+    "0.1.0-beta.70",
+    "0.1.0-beta.71",
+    "0.1.0-beta.72",
+    "0.1.0-beta.73",
+    "0.1.0-beta.74"
+  ]
+}
