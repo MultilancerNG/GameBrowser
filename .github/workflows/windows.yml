@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # The read-only evidence helper does not alter the app. Tag pushes ignore path
+    # filters, and every production/code change still runs the complete source gate.
+    paths-ignore: ['.github/workflows/windows-source-evidence.yml']
   pull_request:
   workflow_dispatch:
 permissions:

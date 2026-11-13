@@ -6,18 +6,21 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: write
+  actions: read
 jobs:
   evidence:
     if: github.repository == 'MultilancerNG/GameBrowser'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      hub_timeout_missing: ${{ steps.logs.outputs.hub_timeout_missing }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: 18a8f6d7ad0aae4b3f9ef55536c73a13236a3064
           persist-credentials: false
-      - name: Guard exact stalled checks and retain their bounded logs
+      - name: Read exact completed source logs without further cancellation
+        id: logs
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -33,6 +36,9 @@ jobs:
           New-Item -ItemType Directory -Force evidence | Out-Null
           $allowedFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
           foreach ($path in @(git ls-files '*.test.ts' '*.test.mjs')) { $null = $allowedFiles.Add($path) }
+          $hubTests = @([regex]::Matches([IO.File]::ReadAllText((Join-Path $PWD 'hub-client.test.ts')), 'test\("([^"\r\n]+)"') | ForEach-Object { $_.Groups[1].Value })
+          if ($hubTests.Count -ne 7) { throw 'Exact Hub test inventory changed' }
+          $needsHubProbe = $false
           foreach ($target in $targets) {
             $runId = $target.run
             $jobId = $target.job
@@ -42,28 +48,7 @@ jobs:
             }
             $job = gh api "repos/$env:GH_REPO/actions/jobs/$jobId" | ConvertFrom-Json -Depth 30
             if ($LASTEXITCODE -ne 0 -or [string]$job.run_id -cne $runId -or $job.name -cne 'check') { throw 'Exact source-job identity guard failed' }
-            $cancelRequested = $false
-            if ($job.status -eq 'in_progress') {
-              $test = @($job.steps | Where-Object { $_.name -ceq 'Run bun test' })
-              if ($test.Count -ne 1 -or $test[0].status -cne 'in_progress' -or -not $test[0].started_at) { throw 'Source test is no longer the stalled step; no cancellation performed' }
-              $elapsed = ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($test[0].started_at)).TotalSeconds
-              if ($elapsed -lt 600) { throw 'Source test has not exceeded the guarded ten-minute bound' }
-              # Recheck immediately: never cancel an installer or a different source generation.
-              $current = gh api "repos/$env:GH_REPO/actions/jobs/$jobId" | ConvertFrom-Json -Depth 30
-              $stillTesting = @($current.steps | Where-Object { $_.name -ceq 'Run bun test' -and $_.status -ceq 'in_progress' })
-              if ($LASTEXITCODE -eq 0 -and $current.status -ceq 'in_progress' -and $stillTesting.Count -eq 1) {
-                $cancelOutput = gh run cancel $runId 2>&1
-                if ($LASTEXITCODE -ne 0) { throw 'Exact stalled source cancellation request failed' }
-                $cancelRequested = $true
-              }
-            } elseif ($job.status -cne 'completed') { throw 'Source job is not an eligible stalled or completed check' }
-            for ($attempt = 0; $attempt -lt 30; $attempt++) {
-              $job = gh api "repos/$env:GH_REPO/actions/jobs/$jobId" | ConvertFrom-Json -Depth 30
-              if ($LASTEXITCODE -ne 0) { throw 'Source job status read failed' }
-              if ($job.status -eq 'completed') { break }
-              Start-Sleep -Seconds 2
-            }
-            if ($job.status -cne 'completed') { throw 'Exact source job did not complete within the evidence bound' }
+            if ($job.status -cne 'completed') { throw 'Exact source job is not completed; no control action is permitted' }
             $logPath = Join-Path $PWD "evidence/source-$runId.log"
             $errorPath = Join-Path $PWD "evidence/source-$runId.download.stderr.txt"
             $downloaded = $false
@@ -89,18 +74,116 @@ jobs:
               $counts[$label] = if ($match.Success) { [int]$match.Groups[1].Value } else { $null }
             }
             $errorNames = @('TimeoutError', 'AssertionError', 'AbortError', 'TargetClosedError') | Where-Object { $text -match "\b$_\b" }
-            $summary = [ordered]@{ diagnostic = 'beta80-source-log'; runId = [long]$runId; cancelRequested = $cancelRequested;
+            $hubPassed = @($hubTests | Where-Object { $text -match ('(?m)\(pass\)\s+' + [regex]::Escape($_) + '(?:\s+\[[^\r\n]*\])?\s*\r?$') })
+            $hubTimeoutPassed = $hubPassed -contains $hubTests[-1]
+            if ($hubPassed.Count -eq 6 -and -not $hubTimeoutPassed) { $needsHubProbe = $true }
+            $summary = [ordered]@{ diagnostic = 'beta80-source-log'; runId = [long]$runId; alreadyCompleted = $true;
               passed = $counts.pass; failed = $counts.fail; skipped = $counts.skip;
-              lastTestFiles = @($files | Select-Object -Last 3); errorNames = @($errorNames) }
+              lastTestFiles = @($files | Select-Object -Last 3); errorNames = @($errorNames);
+              hubClientCompletedTests = $hubPassed.Count; hubClientTimeoutTestPassed = $hubTimeoutPassed }
             $json = $summary | ConvertTo-Json -Compress -Depth 4
             [IO.File]::WriteAllText((Join-Path $PWD "evidence/source-$runId.summary.json"), $json)
             # Public output is fixed keys, numeric counts, booleans, known error names and tracked test paths only.
             Write-Output "::notice title=Bounded beta 80 source log evidence::$json"
           }
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "hub_timeout_missing=$($needsHubProbe.ToString().ToLowerInvariant())`n")
       - name: Retain private bounded source logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: beta80-stalled-source-evidence
           path: evidence/*
+          if-no-files-found: ignore
+  captured-tests:
+    needs: evidence
+    if: needs.evidence.outputs.hub_timeout_missing == 'true'
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [hub, full]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 18a8f6d7ad0aae4b3f9ef55536c73a13236a3064
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - run: bun install --frozen-lockfile
+      - name: Capture exact candidate tests with bounded asynchronous output
+        shell: pwsh
+        env:
+          PROBE_MODE: ${{ matrix.mode }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PROBE_MODE -cnotin @('hub', 'full')) { throw 'Invalid captured test mode' }
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          $allowedFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+          foreach ($path in @(git ls-files '*.test.ts' '*.test.mjs')) { $null = $allowedFiles.Add($path) }
+          $hubTests = @([regex]::Matches([IO.File]::ReadAllText((Join-Path $PWD 'hub-client.test.ts')), 'test\("([^"\r\n]+)"') | ForEach-Object { $_.Groups[1].Value })
+          if ($hubTests.Count -ne 7) { throw 'Exact Hub test inventory changed' }
+          $testProcess = [Diagnostics.Process]::new()
+          $testProcess.StartInfo = [Diagnostics.ProcessStartInfo]::new()
+          $testProcess.StartInfo.FileName = (Get-Command bun).Source
+          $testProcess.StartInfo.ArgumentList.Add('test')
+          if ($env:PROBE_MODE -ceq 'hub') { $testProcess.StartInfo.ArgumentList.Add('hub-client.test.ts') }
+          $testProcess.StartInfo.UseShellExecute = $false
+          $testProcess.StartInfo.CreateNoWindow = $true
+          $testProcess.StartInfo.RedirectStandardOutput = $true
+          $testProcess.StartInfo.RedirectStandardError = $true
+          $bound = if ($env:PROBE_MODE -ceq 'hub') { 30000 } else { 300000 }
+          $timedOut = $false
+          $completed = $false
+          $exitCode = $null
+          try {
+            if (-not $testProcess.Start()) { throw 'Captured test process could not start' }
+            $stdout = $testProcess.StandardOutput.ReadToEndAsync()
+            $stderr = $testProcess.StandardError.ReadToEndAsync()
+            $completed = $testProcess.WaitForExit($bound)
+            if (-not $completed) {
+              $timedOut = $true
+              $testProcess.Kill($true)
+              $completed = $testProcess.WaitForExit(5000)
+            }
+            if ($completed) { $exitCode = $testProcess.ExitCode }
+            $outText = if ($stdout.Wait(1000)) { $stdout.Result } else { '[stdout did not close within the evidence bound]' }
+            $errText = if ($stderr.Wait(1000)) { $stderr.Result } else { '[stderr did not close within the evidence bound]' }
+            if ($outText.Length -gt 4194304) { $outText = $outText.Substring($outText.Length - 4194304) }
+            if ($errText.Length -gt 4194304) { $errText = $errText.Substring($errText.Length - 4194304) }
+            [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/captured.stdout.txt'), $outText)
+            [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/captured.stderr.txt'), $errText)
+            $text = [regex]::Replace("$outText`n$errText", '\x1b\[[0-?]*[ -/]*[@-~]', '')
+            $files = [Collections.Generic.List[string]]::new()
+            foreach ($match in [regex]::Matches($text, '(?m)([A-Za-z0-9_./\\-]+\.test\.(?:ts|mjs)):\s*$')) {
+              $path = $match.Groups[1].Value.Replace('\', '/').TrimStart('.', '/')
+              if ($allowedFiles.Contains($path)) { $files.Add($path) }
+            }
+            $counts = @{}
+            foreach ($label in @('pass', 'fail', 'skip')) {
+              $match = [regex]::Match($text, "(?m)\b(\d{1,7})\s+$label\s*`r?$")
+              $counts[$label] = if ($match.Success) { [int]$match.Groups[1].Value } else { $null }
+            }
+            $hubPassed = @($hubTests | Where-Object { $text -match ('(?m)\(pass\)\s+' + [regex]::Escape($_) + '(?:\s+\[[^\r\n]*\])?\s*\r?$') })
+            $summary = [ordered]@{ diagnostic = 'beta80-captured-tests'; mode = $env:PROBE_MODE; completed = $completed;
+              timedOut = $timedOut; exitCode = $exitCode; passed = $counts.pass; failed = $counts.fail; skipped = $counts.skip;
+              lastTestFiles = @($files | Select-Object -Last 3); hubClientCompletedTests = $hubPassed.Count;
+              hubClientTimeoutTestPassed = ($hubPassed -contains $hubTests[-1]) }
+            $json = $summary | ConvertTo-Json -Compress -Depth 4
+            [IO.File]::WriteAllText((Join-Path $PWD 'artifacts/captured.summary.json'), $json)
+            Write-Output "::notice title=Bounded beta 80 captured test counts::$json"
+            if ($timedOut -or -not $completed -or $exitCode -ne 0 -or $counts.pass -lt 1 -or $counts.fail -ne 0) { exit 1 }
+          } finally {
+            try { if ($testProcess.StartTime -and -not $testProcess.HasExited) { $testProcess.Kill($true); $null = $testProcess.WaitForExit(5000) } } catch { }
+            $testProcess.Dispose()
+          }
+      - name: Retain private captured test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta80-windows-${{ matrix.mode }}-captured
+          path: artifacts/captured.*
           if-no-files-found: ignore
