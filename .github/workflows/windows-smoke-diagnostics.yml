@@ -7,7 +7,7 @@ on:
     inputs:
       run_id:
         description: Existing Windows workflow run whose smoke evidence should be inspected
-        default: '43507860678'
+        default: '43524612039'
         required: true
         type: string
 permissions:
@@ -28,7 +28,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          SMOKE_RUN_ID: ${{ inputs.run_id || '43507860678' }}
+          SMOKE_RUN_ID: ${{ inputs.run_id || '43524612039' }}
         run: |
           function Protect-PublicSmokeText([string]$Text, [int]$Limit = 2400, [switch]$Tail) {
             if ([string]::IsNullOrEmpty($Text)) { return '' }
