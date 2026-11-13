@@ -834,7 +834,7 @@ function FingerprintSettings({
         </label>
         <label className="fld">
           <span>Desktop viewport presets & mobile sizes</span>
-          <select aria-label="Viewport preset" value={VIEWPORT_PRESETS.some((preset) => preset.value === screen) ? screen : "custom"} disabled={disabled} onChange={(event) => { if (event.target.value !== "custom") onScreenChange(event.target.value); }}>
+          <select aria-label="Viewport preset" value={VIEWPORT_PRESETS.some((preset) => preset.value === screen.replace(/[*X]/g, "x")) ? screen.replace(/[*X]/g, "x") : "custom"} disabled={disabled} onChange={(event) => { if (event.target.value !== "custom") onScreenChange(event.target.value); }}>
             <option value="">Automatic</option>
             <optgroup label="Desktop viewport presets">{VIEWPORT_PRESETS.filter((preset) => preset.kind === "desktop").map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</optgroup>
             <optgroup label="Mobile device sizes">{VIEWPORT_PRESETS.filter((preset) => preset.kind === "mobile").map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</optgroup>
