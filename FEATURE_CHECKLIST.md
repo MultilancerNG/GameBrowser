@@ -23,7 +23,7 @@ This distinguishes implemented desktop code from live-service and release valida
 - [x] Full/slim Windows installers and SHA-256 checksums published for beta 78.
 - [x] Published beta 78 passed a fresh Windows install/start/Local-mode/helper/shutdown/uninstall check.
 - [x] Installed Windows Local MCP initialization, tools/list, and agent discovery passed.
-- [x] Current dashboard layout and existing controls retained.
+- [x] AliasMode-derived profile-list dashboard and its controls retained.
 - [x] Import supported TXT/CSV/JSON/XLSX profile exports or pasted account data.
 - [x] Discoverable export controls for one profile, selected profiles or the filtered view.
 - [x] TXT/XLSX identity and cookie exports; CSV account credentials, with Cloud edit checks.
@@ -50,6 +50,17 @@ This distinguishes implemented desktop code from live-service and release valida
 - [x] Auto allocation accounts for concurrent profile starts as well as running browsers.
 
 RAM settings are soft heap/cache targets, not total-process memory caps. They apply at the next fresh launch and are device-only.
+
+## Original StakeMode workspace: not included in beta 78
+
+Inspection of the supplied `AliasMode-Game-stakemode-v0.1.0-preview.2.zip` confirmed that it contains a separate `StakeMode-cli.ts` application and `workspace/` interface. GameBrowser beta 78 does not include that workspace. The earlier statement that the original UI was retained was inaccurate.
+
+- [ ] Restore the original Live workspace browser grid and Admin/Follower board.
+- [ ] Restore Full Admin View and embedded per-profile address/tab controls.
+- [ ] Integrate the original workspace task manager, resource monitor and extension/add-on management.
+- [ ] Verify the restored workspace alongside the current Local/Cloud, MCP and following features.
+
+Beta 78's current Admin/Follower controls appear in the profile-list dashboard after selecting at least two profiles (or when a saved/active group exists). Open each selected profile, choose a Chromium Admin, then use Start following. Local following does not require a Cloud account. These controls do not provide the original StakeMode Live workspace.
 
 ## Requires external access or configuration
 
