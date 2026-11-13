@@ -1,0 +1,49 @@
+name: Validate published Windows installer
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-published-smoke.yml'
+      - 'scripts/gamebrowser-windows-smoke.ps1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published GameBrowser version to validate
+        default: '0.1.0-beta.76'
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  installed:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download published full installer and checksums
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_VERSION: ${{ inputs.version || '0.1.0-beta.76' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SMOKE_VERSION -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid published version' }
+          New-Item -ItemType Directory -Force artifacts/windows | Out-Null
+          gh release download "v$env:SMOKE_VERSION" --repo $env:GITHUB_REPOSITORY --pattern "GameBrowser_$($env:SMOKE_VERSION)_x64-offline-setup.exe" --pattern SHA256SUMS.txt --dir artifacts/windows
+          if ($LASTEXITCODE -ne 0) { throw 'Published installer download failed' }
+      - name: Validate installed application
+        shell: pwsh
+        env:
+          SMOKE_VERSION: ${{ inputs.version || '0.1.0-beta.76' }}
+        run: |
+          ./scripts/gamebrowser-windows-smoke.ps1 `
+            -InstallerPath "artifacts/windows/GameBrowser_$($env:SMOKE_VERSION)_x64-offline-setup.exe" `
+            -ChecksumsPath artifacts/windows/SHA256SUMS.txt `
+            -ExpectedVersion $env:SMOKE_VERSION `
+            -ReportPath artifacts/windows-published-smoke.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gamebrowser-published-windows-smoke
+          path: artifacts/windows-published-smoke.json
+          if-no-files-found: ignore
