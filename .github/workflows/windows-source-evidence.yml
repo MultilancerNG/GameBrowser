@@ -1,0 +1,106 @@
+name: Inspect stalled beta 80 source checks
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/windows-source-evidence.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+jobs:
+  evidence:
+    if: github.repository == 'MultilancerNG/GameBrowser'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 18a8f6d7ad0aae4b3f9ef55536c73a13236a3064
+          persist-credentials: false
+      - name: Guard exact stalled checks and retain their bounded logs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GH_REPO -cne 'MultilancerNG/GameBrowser') { throw 'Unexpected diagnostic repository' }
+          $expectedSha = '18a8f6d7ad0aae4b3f9ef55536c73a13236a3064'
+          $targets = @(
+            @{ run = '43521208697'; job = '132215622562' },
+            @{ run = '43521205162'; job = '132215611254' }
+          )
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          $allowedFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+          foreach ($path in @(git ls-files '*.test.ts' '*.test.mjs')) { $null = $allowedFiles.Add($path) }
+          foreach ($target in $targets) {
+            $runId = $target.run
+            $jobId = $target.job
+            $run = gh api "repos/$env:GH_REPO/actions/runs/$runId" | ConvertFrom-Json -Depth 30
+            if ($LASTEXITCODE -ne 0 -or $run.head_sha -cne $expectedSha -or $run.path -cne '.github/workflows/windows.yml' -or $run.event -cne 'push') {
+              throw 'Exact source-run identity guard failed'
+            }
+            $job = gh api "repos/$env:GH_REPO/actions/jobs/$jobId" | ConvertFrom-Json -Depth 30
+            if ($LASTEXITCODE -ne 0 -or [string]$job.run_id -cne $runId -or $job.name -cne 'check') { throw 'Exact source-job identity guard failed' }
+            $cancelRequested = $false
+            if ($job.status -eq 'in_progress') {
+              $test = @($job.steps | Where-Object { $_.name -ceq 'Run bun test' })
+              if ($test.Count -ne 1 -or $test[0].status -cne 'in_progress' -or -not $test[0].started_at) { throw 'Source test is no longer the stalled step; no cancellation performed' }
+              $elapsed = ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($test[0].started_at)).TotalSeconds
+              if ($elapsed -lt 600) { throw 'Source test has not exceeded the guarded ten-minute bound' }
+              # Recheck immediately: never cancel an installer or a different source generation.
+              $current = gh api "repos/$env:GH_REPO/actions/jobs/$jobId" | ConvertFrom-Json -Depth 30
+              $stillTesting = @($current.steps | Where-Object { $_.name -ceq 'Run bun test' -and $_.status -ceq 'in_progress' })
+              if ($LASTEXITCODE -eq 0 -and $current.status -ceq 'in_progress' -and $stillTesting.Count -eq 1) {
+                $cancelOutput = gh run cancel $runId 2>&1
+                if ($LASTEXITCODE -ne 0) { throw 'Exact stalled source cancellation request failed' }
+                $cancelRequested = $true
+              }
+            } elseif ($job.status -cne 'completed') { throw 'Source job is not an eligible stalled or completed check' }
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              $job = gh api "repos/$env:GH_REPO/actions/jobs/$jobId" | ConvertFrom-Json -Depth 30
+              if ($LASTEXITCODE -ne 0) { throw 'Source job status read failed' }
+              if ($job.status -eq 'completed') { break }
+              Start-Sleep -Seconds 2
+            }
+            if ($job.status -cne 'completed') { throw 'Exact source job did not complete within the evidence bound' }
+            $logPath = Join-Path $PWD "evidence/source-$runId.log"
+            $errorPath = Join-Path $PWD "evidence/source-$runId.download.stderr.txt"
+            $downloaded = $false
+            for ($attempt = 0; $attempt -lt 8; $attempt++) {
+              gh run view $runId --job $jobId --log > $logPath 2> $errorPath
+              if ($LASTEXITCODE -eq 0) { $downloaded = $true; break }
+              Start-Sleep -Seconds 3
+            }
+            if (-not $downloaded) { throw 'Completed source log was not retrievable within the evidence bound' }
+            if ((Get-Item -LiteralPath $logPath).Length -gt 8388608) {
+              [IO.File]::WriteAllText($logPath, '[Source log exceeded its eight-MiB evidence bound and was omitted]')
+              throw 'Source log exceeded its eight-MiB evidence bound'
+            }
+            $text = [regex]::Replace([IO.File]::ReadAllText($logPath), '\x1b\[[0-?]*[ -/]*[@-~]', '')
+            $files = [Collections.Generic.List[string]]::new()
+            foreach ($match in [regex]::Matches($text, '(?m)([A-Za-z0-9_./\\-]+\.test\.(?:ts|mjs)):\s*$')) {
+              $path = $match.Groups[1].Value.Replace('\', '/').TrimStart('.', '/')
+              if ($allowedFiles.Contains($path)) { $files.Add($path) }
+            }
+            $counts = @{}
+            foreach ($label in @('pass', 'fail', 'skip')) {
+              $match = [regex]::Match($text, "(?m)\b(\d{1,7})\s+$label\s*`r?$")
+              $counts[$label] = if ($match.Success) { [int]$match.Groups[1].Value } else { $null }
+            }
+            $errorNames = @('TimeoutError', 'AssertionError', 'AbortError', 'TargetClosedError') | Where-Object { $text -match "\b$_\b" }
+            $summary = [ordered]@{ diagnostic = 'beta80-source-log'; runId = [long]$runId; cancelRequested = $cancelRequested;
+              passed = $counts.pass; failed = $counts.fail; skipped = $counts.skip;
+              lastTestFiles = @($files | Select-Object -Last 3); errorNames = @($errorNames) }
+            $json = $summary | ConvertTo-Json -Compress -Depth 4
+            [IO.File]::WriteAllText((Join-Path $PWD "evidence/source-$runId.summary.json"), $json)
+            # Public output is fixed keys, numeric counts, booleans, known error names and tracked test paths only.
+            Write-Output "::notice title=Bounded beta 80 source log evidence::$json"
+          }
+      - name: Retain private bounded source logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta80-stalled-source-evidence
+          path: evidence/*
+          if-no-files-found: ignore
