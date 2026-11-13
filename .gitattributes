@@ -1,0 +1,7 @@
+# Keep source and generated document hashes identical on Windows and Linux.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.bmp binary
+*.woff2 binary
+*.zip binary

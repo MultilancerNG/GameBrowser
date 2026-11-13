@@ -1235,6 +1235,12 @@ export async function handleUiRequest(
       if (rejected) return rejected;
       const body = await req.json() as Record<string, unknown>;
       const action = String(body.action ?? "");
+      if (["profile-grant", "remove-profile-grant", "grant", "remove-grant"].includes(action)) {
+        const { workspace } = await cloud.status();
+        if (workspace.role !== "owner" && workspace.role !== "admin") {
+          return Response.json({ ok: false, error: "Only workspace owners and admins can manage profile access" }, { status: 403 });
+        }
+      }
       if (action === "invite") return Response.json(await cloud.createInvitation(String(body.email ?? ""), body.role === "admin" ? "admin" : "member"));
       if (action === "create-folder") return Response.json(await cloud.createFolder(String(body.name ?? ""), typeof body.parentName === "string" ? body.parentName : null));
       if (action === "move-folder") return Response.json(await cloud.moveFolder(String(body.name ?? ""), typeof body.parentName === "string" ? body.parentName : null));
@@ -1434,7 +1440,7 @@ export async function handleUiRequest(
         const { id } = await remote.createProfile(input);
         return Response.json({ ok: true, id });
       }
-      const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
+      const profile = buildNewProfile(input, (id) => !!store.getProfile(id), (seed) => store.hasFingerprintSeed(seed));
       if (!options.cloudBrowser) store.applyGroupExtensionDefaults(profile, null, false);
       // Best-effort: match the browser clock to the proxy's exit location. A
       // failed lookup keeps the host timezone.

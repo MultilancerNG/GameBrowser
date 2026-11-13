@@ -104,8 +104,14 @@ export function generateId(exists: (id: string) => boolean): string {
   throw new Error("could not generate a unique profile id");
 }
 
-export function buildNewProfile(input: NewProfileInput, exists: (id: string) => boolean): Profile {
-  const id = generateId(exists);
+export function buildNewProfile(
+  input: NewProfileInput,
+  exists: (id: string) => boolean,
+  seedExists: (seed: number) => boolean = () => false,
+): Profile {
+  // Different IDs can share a 32-bit hash. New profiles must not reuse an
+  // existing profile's seed, including identities retained in Trash.
+  const id = generateId((candidate) => exists(candidate) || seedExists(deterministicSeed(candidate)));
 
   const proxy: ProxySpec | null = normalizeProxySpec(input.proxy);
 

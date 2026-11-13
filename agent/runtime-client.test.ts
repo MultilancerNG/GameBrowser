@@ -5,6 +5,7 @@ import {
   AgentRuntimeClient,
   RUNTIME_PROTOCOL,
   defaultRuntimeDescriptorPath,
+  defaultDesktopExecutable,
   validateRuntimeDescriptor,
   windowsProcessIdentityCommand,
 } from "./runtime-client.mjs";
@@ -67,7 +68,7 @@ test("Windows process identity does not depend on PowerShell modules or PATH", (
 
 test("runtime descriptor path uses the Tauri application data directory", () => {
   expect(defaultRuntimeDescriptorPath({ APPDATA: "C:\\Users\\me\\AppData\\Roaming" } as any, "win32"))
-    .toBe(join("C:\\Users\\me\\AppData\\Roaming", "com.aliasmode.desktop", "agent-runtime.json"));
+    .toBe(join("C:\\Users\\me\\AppData\\Roaming", "ng.solomon.gamebrowser", "agent-runtime.json"));
   // Linux follows Tauri's data folder: XDG_DATA_HOME when it is absolute, else ~/.local/share.
   // Linux paths use "/" whatever system runs the code.
   expect(defaultRuntimeDescriptorPath({ HOME: "/home/me" } as any, "linux"))
@@ -79,4 +80,11 @@ test("runtime descriptor path uses the Tauri application data directory", () => 
   expect(defaultRuntimeDescriptorPath({
     ALIASMODE_RUNTIME_DESCRIPTOR: "C:\\fixture\\runtime.json",
   } as any)).toBe("C:\\fixture\\runtime.json");
+});
+
+test("Windows agent startup finds the GameBrowser executable without opening AliasMode", () => {
+  expect(defaultDesktopExecutable({ LOCALAPPDATA: "C:/Users/me/AppData/Local" }, "win32"))
+    .toBe(join("C:/Users/me/AppData/Local", "GameBrowser", "gamebrowser.exe"));
+  expect(defaultDesktopExecutable({ ALIASMODE_DESKTOP_EXE: "D:/GameBrowser/gamebrowser.exe" }, "win32"))
+    .toBe("D:/GameBrowser/gamebrowser.exe");
 });

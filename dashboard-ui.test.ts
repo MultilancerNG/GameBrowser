@@ -917,7 +917,7 @@ test("the second accent marks identity, and the credit matches the website", () 
 
 test("the project links match the site footer and this repository", () => {
   // The GitHub URL is this repo's own origin — the two cannot drift apart.
-  expect(app).toContain('href: "https://github.com/aliasmode/aliasmode"');
+  expect(app).toContain('href: "https://github.com/MultilancerNG/GameBrowser"');
   expect(app).toContain('href: "https://t.me/aliasmode"');
   // Outbound links from a desktop shell must not hand the opener over.
   const links = app.slice(app.indexOf("const PROJECT_LINKS"), app.indexOf("] as const;", app.indexOf("const PROJECT_LINKS")));

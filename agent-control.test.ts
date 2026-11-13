@@ -48,6 +48,7 @@ function harness(options: {
       temporary = false;
     },
     getProfile: (id: string) => id === "profile1" && profileExists ? { id } : null,
+    hasFingerprintSeed: () => false,
     deleteProfile: (id: string) => {
       events.push(`delete:${id}`);
       profileExists = false;

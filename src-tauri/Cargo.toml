@@ -1,19 +1,19 @@
 [package]
 name = "aliasmode-desktop"
-version = "0.1.0-beta.74"
-description = "AliasMode Windows desktop shell"
+version = "0.1.0-beta.75"
+description = "GameBrowser Windows desktop shell by Solomon Gbeta"
 edition = "2021"
 rust-version = "1.89"
 license = "Apache-2.0"
 publish = false
-default-run = "aliasmode"
+default-run = "gamebrowser"
 
 [lib]
 name = "aliasmode_desktop"
 crate-type = ["rlib"]
 
 [[bin]]
-name = "aliasmode"
+name = "gamebrowser"
 path = "src/main.rs"
 
 # Keeps the installed MCP helper path; the helper code runs inside the sidecar program.

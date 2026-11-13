@@ -3331,7 +3331,7 @@ test("Cloud workspace forwards hierarchy and direct profile grants without local
   const s = store();
   const calls: unknown[] = [];
   const forward = (method: string) => async (...args: unknown[]) => { calls.push([method, ...args]); return { ok: true }; };
-  const client = { createFolder: forward("create"), moveFolder: forward("move"), setProfileGrant: forward("grant"), removeProfileGrant: forward("remove") };
+  const client = { status: async () => ({ workspace: { role: "admin" } }), createFolder: forward("create"), moveFolder: forward("move"), setProfileGrant: forward("grant"), removeProfileGrant: forward("remove") };
   const before = s.listFolders();
   try {
     for (const body of [
@@ -5155,4 +5155,27 @@ test("fingerprint check route opens only the AliasMode test page in a running pr
   expect(closed!.status).toBe(409);
   expect(opened).toHaveLength(2);
   s.close();
+});
+
+test("profile and folder sharing is restricted to workspace owners and admins", async () => {
+  const s = store();
+  try {
+    for (const role of ["member", "admin", "owner", "unknown"]) {
+      const calls: string[] = [];
+      const forward = (method: string) => async () => { calls.push(method); return { ok: true }; };
+      const client = {
+        async status() { return { workspace: { role } }; },
+        setProfileGrant: forward("profile-grant"), removeProfileGrant: forward("remove-profile-grant"),
+        setFolderGrant: forward("grant"), removeFolderGrant: forward("remove-grant"),
+      };
+      for (const action of ["profile-grant", "remove-profile-grant", "grant", "remove-grant"]) {
+        const response = await handleUiRequest(new Request("http://x/ui/api/cloud-workspace", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action, profileId: "p1", accountId: "member", folderName: "Sales", permission: "edit" }),
+        }), {} as any, s, null, { cloudConnection: { client } as unknown as CloudConnectionRuntime });
+        expect(response!.status).toBe(role === "admin" || role === "owner" ? 200 : 403);
+      }
+      expect(calls).toHaveLength(role === "admin" || role === "owner" ? 4 : 0);
+    }
+  } finally { s.close(); }
 });

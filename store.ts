@@ -76,6 +76,7 @@ export class ProfileStore {
     } catch {
       /* column already exists */
     }
+    this.db.exec("CREATE INDEX IF NOT EXISTS profiles_fingerprint_seed ON profiles(fingerprint_seed)");
     // Cookies added while the profile was closed. The next launch sets them, then clears them.
     try {
       this.db.exec(`ALTER TABLE profiles ADD COLUMN pending_cookies_json TEXT NOT NULL DEFAULT '[]'`);
@@ -498,6 +499,11 @@ export class ProfileStore {
       .query<any, [string]>(`SELECT * FROM profiles WHERE id = ? AND trashed_at = 0`)
       .get(id);
     return row ? rowToProfile(row) : null;
+  }
+
+  /** Include Trash: restoring a profile must not reuse a new profile's identity. */
+  hasFingerprintSeed(seed: number): boolean {
+    return !!this.db.query("SELECT 1 FROM profiles WHERE fingerprint_seed = ? LIMIT 1").get(seed);
   }
 
   listProfiles(): Profile[] {

@@ -393,7 +393,7 @@ export class AgentControlSession {
     if (this.deps.remote) {
       id = (await this.deps.remote.createProfile(input as NewProfileInput)).id;
     } else {
-      const profile = buildNewProfile(input as NewProfileInput, (candidate) => !!this.deps.store.getProfile(candidate));
+      const profile = buildNewProfile(input as NewProfileInput, (candidate) => !!this.deps.store.getProfile(candidate), (seed) => this.deps.store.hasFingerprintSeed(seed));
       if (profile.proxy) {
         await attachTimezones([profile], undefined, true).catch(() => {});
         syncFirefoxTimezone(profile);

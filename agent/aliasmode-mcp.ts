@@ -49,7 +49,7 @@ function helperExecutable(): string {
 
 function desktopExecutable(): string {
   return process.env.ALIASMODE_DESKTOP_EXE
-    || join(dirname(process.execPath), process.platform === "win32" ? "AliasMode.exe" : "aliasmode");
+    || join(dirname(process.execPath), process.platform === "win32" ? "gamebrowser.exe" : "aliasmode");
 }
 
 function nodeExecutable(root: string): string {

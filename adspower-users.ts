@@ -270,7 +270,7 @@ export async function handleUserApi(
         const { id } = await remote.createProfile(input);
         return ok({ id });
       }
-      const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
+      const profile = buildNewProfile(input, (id) => !!store.getProfile(id), (seed) => store.hasFingerprintSeed(seed));
       // Match the browser clock to the proxy's geo, exactly as /ui/api create and
       // AdsPower's automatic_timezone do. Best-effort: never fail create on geoip.
       if (profile.proxy) {

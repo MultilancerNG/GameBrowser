@@ -29,14 +29,16 @@ use tauri_plugin_shell::ShellExt;
 
 const IMPORT_RESTRICTION: &str = "Windows DPAPI protects persisted browser secrets, so this import works only for the same Windows machine and account. Persisted persona fields are preserved, but runtime or browser differences can change the account-visible fingerprint.";
 
-const ALLOWED_EXTERNAL_URLS: [&str; 9] = [
+const ALLOWED_EXTERNAL_URLS: [&str; 11] = [
     "https://aliasmode.com/support/",
     "https://aliasmode.com/terms/",
     "https://aliasmode.com/privacy/",
     "https://aliasmode.com/acceptable-use/",
     "https://nobleproxy.com/t/aliasmode",
     "https://t.me/aliasmode",
-    "https://github.com/aliasmode/aliasmode",
+    "https://github.com/MultilancerNG/GameBrowser",
+    "https://solomon.ng",
+    "https://solomon.ng/",
     "https://xreacher.com/",
     "https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor",
 ];
@@ -333,7 +335,9 @@ mod tests {
             "https://aliasmode.com/acceptable-use/",
             "https://nobleproxy.com/t/aliasmode",
             "https://t.me/aliasmode",
-            "https://github.com/aliasmode/aliasmode",
+            "https://github.com/MultilancerNG/GameBrowser",
+            "https://solomon.ng",
+            "https://solomon.ng/",
             "https://xreacher.com/",
             "https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor",
             "https://nobleproxy.com/t/aliasmode?src=sidebar-cart",

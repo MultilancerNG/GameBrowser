@@ -56,7 +56,7 @@ export function defaultRuntimeDescriptorPath(env = process.env, platform = proce
   }
   if (platform === "linux") return posix.join(linuxDataHome(env), "com.aliasmode.desktop", "agent-runtime.json");
   if (!env.APPDATA) throw new Error("APPDATA is required to discover AliasMode");
-  return join(env.APPDATA, "com.aliasmode.desktop", "agent-runtime.json");
+  return join(env.APPDATA, "ng.solomon.gamebrowser", "agent-runtime.json");
 }
 
 export function windowsProcessIdentityCommand(pid, env = process.env) {
@@ -285,12 +285,12 @@ async function connectAgent(descriptor) {
   return new AgentRuntimeClient(socket);
 }
 
-function defaultDesktopExecutable(env = process.env) {
+export function defaultDesktopExecutable(env = process.env, platform = process.platform) {
   if (env.ALIASMODE_DESKTOP_EXE) return env.ALIASMODE_DESKTOP_EXE;
-  if (process.platform === "darwin") return "/Applications/AliasMode.app/Contents/MacOS/aliasmode";
-  if (process.platform === "linux") return join(linuxDataHome(env), "aliasmode", "bin", "aliasmode");
+  if (platform === "darwin") return "/Applications/AliasMode.app/Contents/MacOS/aliasmode";
+  if (platform === "linux") return join(linuxDataHome(env), "aliasmode", "bin", "aliasmode");
   if (!env.LOCALAPPDATA) throw new Error("LOCALAPPDATA is required to start AliasMode");
-  return join(env.LOCALAPPDATA, "AliasMode", "AliasMode.exe");
+  return join(env.LOCALAPPDATA, "GameBrowser", "gamebrowser.exe");
 }
 
 function launchBackground(executable) {

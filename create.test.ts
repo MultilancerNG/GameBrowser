@@ -280,3 +280,33 @@ test.each(["chromium", "firefox"] as const)("new %s profiles preserve every expl
     store.close();
   }
 });
+
+test("new profiles retry a seed collision before deriving their identity", () => {
+  const rejected: number[] = [];
+  const profile = buildNewProfile({ engine: "firefox", platformOs: "windows" }, () => false, (seed) => {
+    rejected.push(seed);
+    return rejected.length === 1;
+  });
+  expect(rejected).toHaveLength(2);
+  expect(profile.fingerprintSeed).not.toBe(rejected[0]);
+  expect(profile.fingerprintSeed).toBe(rejected[1]!);
+  expect(profile.fingerprintSeed).toBe(deterministicSeed(profile.id));
+  expect(graphicsIdentity("windows", profile.fingerprintSeed)["webGl:renderer"])
+    .toBe(profile.firefox!.config["webGl:renderer"]);
+});
+
+test("seed reservations include profiles in Trash without changing their saved identities", () => {
+  const store = new ProfileStore(":memory:");
+  try {
+    const first = buildNewProfile({ engine: "chromium" }, () => false);
+    expect(store.hasFingerprintSeed(first.fingerprintSeed)).toBe(false);
+    store.upsertProfile(first);
+    expect(store.hasFingerprintSeed(first.fingerprintSeed)).toBe(true);
+    store.trashProfile(first.id);
+    expect(store.getProfile(first.id)).toBeNull();
+    expect(store.hasFingerprintSeed(first.fingerprintSeed)).toBe(true);
+    const second = buildNewProfile({ engine: "chromium" }, (id) => !!store.getProfile(id), (seed) => store.hasFingerprintSeed(seed));
+    expect(second.id).not.toBe(first.id);
+    expect(second.fingerprintSeed).not.toBe(first.fingerprintSeed);
+  } finally { store.close(); }
+});
