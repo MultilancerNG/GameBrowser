@@ -1,6 +1,6 @@
 # GameBrowser feature checklist
 
-This distinguishes implemented desktop code from live-service and release validation. Windows beta 76 is published. Beta 77 has passed its installed Windows smoke check and is publishing; the latest source is prepared as beta 78.
+This distinguishes implemented desktop code from live-service and release validation. Windows beta 77 is published and has passed its installed Windows smoke check. Beta 78 is building from the latest source.
 
 ## Implemented and verified in source
 
@@ -20,8 +20,8 @@ This distinguishes implemented desktop code from live-service and release valida
 - [x] Trusted-event capture isolated from website scripts, bounded queues and visible follower errors.
 - [x] Stop detaches mirroring without closing the browser profiles.
 - [x] Cyber download page, direct Windows download, source links/features section removed as requested.
-- [x] Full/slim Windows installers and SHA-256 checksums published for beta 76.
-- [x] Published beta 76 passed a fresh Windows install/start/Local-mode/helper/shutdown/uninstall check.
+- [x] Full/slim Windows installers and SHA-256 checksums published for beta 77.
+- [x] Published beta 77 passed a fresh Windows install/start/Local-mode/helper/shutdown/uninstall check.
 - [x] Installed Windows Local MCP initialization, tools/list, and agent discovery passed.
 - [x] Current dashboard layout and existing controls retained.
 - [x] Import supported TXT/CSV/JSON/XLSX profile exports or pasted account data.
@@ -38,7 +38,7 @@ This distinguishes implemented desktop code from live-service and release valida
 - [x] Full regression: 2,107 passed, 10 skipped; focused final UI/API/selection tests passed.
 - [x] Browser QA covers rapid Admin changes, pending Stop, Firefox followers and import/export roundtrips.
 - [x] Beta 77 full/slim installers built and installed Windows smoke passed.
-- [ ] Publish and validate beta 78 with all latest settings and automatic-follow controls.
+- [ ] Complete the running beta 78 Windows build and installed-app validation, then update the download.
 
 ## Browser settings implemented in beta 78 source
 

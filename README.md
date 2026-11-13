@@ -8,7 +8,7 @@ GameBrowser adapts the complete Apache-2.0 [AliasMode desktop application](https
 
 [Windows releases](https://github.com/MultilancerNG/GameBrowser/releases) · [Source](https://github.com/MultilancerNG/GameBrowser)
 
-The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to `https://multilancerng.github.io/GameBrowser/` after Pages is enabled with **GitHub Actions** as its source. Windows beta 76 has full and slim installers plus SHA-256 checksums in Releases. Newer source changes are released only after their Windows workflow passes. Installed-app validation is tracked separately from compilation.
+The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to `https://multilancerng.github.io/GameBrowser/` after Pages is enabled with **GitHub Actions** as its source. Windows beta 77 has full and slim installers plus SHA-256 checksums in Releases, and has passed a fresh installed-app smoke check. Beta 78 is building with the latest profile controls. Newer source changes are released only after their Windows workflow passes. Installed-app validation is tracked separately from compilation.
 
 ## Features
 
