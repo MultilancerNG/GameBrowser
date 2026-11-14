@@ -17,6 +17,7 @@ import { decodePortableProfile } from "../portable-profile.ts";
 import { proxyHostPort } from "../proxy.ts";
 import type { StandaloneCloudContext } from "./cloud.ts";
 import { initializeBoundPendingQueue } from "./queue-service-binding.ts";
+import { relayEndpoint } from "../workspace/protocol.ts";
 
 export interface StandaloneCloudLifecycleOptions {
   root: string;
@@ -31,6 +32,8 @@ export interface StandaloneCloudLifecycleOptions {
   env?: NodeJS.ProcessEnv;
   log?: (message: string) => void;
   appFetch?: StakeModeWorkspaceOptions["appFetch"];
+  /** The owning listener's Cloud route, set before any browser extension is prepared. */
+  relayUrl?: string;
 }
 
 /** Local identity and Cloud authority never share a store or a browser owner. */
@@ -50,9 +53,23 @@ export class StandaloneCloudLifecycle {
   private exiting = false;
   private generation = 0;
   private createdKey?: string;
+  private relayUrl?: string;
   private verified = new Map<string, { version: number; profile: Profile; sessionBundle?: string }>();
 
-  constructor(private readonly options: StandaloneCloudLifecycleOptions) {}
+  constructor(private readonly options: StandaloneCloudLifecycleOptions) {
+    if (options.relayUrl) this.configureRelayUrl(options.relayUrl);
+  }
+
+  private configureRelayUrl(value: string): void {
+    const url = relayEndpoint(value);
+    if (new URL(url).pathname !== "/workspace/cloud/relay") throw new Error("Cloud browser following requires its own local Cloud relay route");
+    this.relayUrl = url;
+    this.workspace?.activate(url);
+  }
+
+  private requireRelayUrl(): void {
+    if (!this.relayUrl) throw new Error("Cloud browser following relay is not configured; reopen the Cloud workspace before starting a browser");
+  }
 
   takeCreatedQueueKey(): string | undefined {
     const key = this.createdKey;
@@ -192,6 +209,7 @@ export class StandaloneCloudLifecycle {
         applySession: (endpoint, bundle, urls) => applySessionToEndpoint(endpoint, bundle, urls, { log: this.options.log }),
         beforeLaunch: async profile => {
           if (!workspace) throw new Error("Cloud workspace preparation is unavailable");
+          this.requireRelayUrl();
           await this.authorize(profile.id);
           const verified = this.verified.get(profile.id);
           if (!verified) throw new Error("Cloud profile identity has not been verified");
@@ -229,7 +247,7 @@ export class StandaloneCloudLifecycle {
             return { id: profile.id, name: profile.name, engine: profile.engine ?? "chromium",
               screenWidth: screen ? Number(screen[1]) : 1366, screenHeight: screen ? Number(screen[2]) : 768 };
           }) : [],
-          beforeStart: id => this.authorize(id),
+          beforeStart: id => { this.requireRelayUrl(); return this.authorize(id); },
           lifecycle: {
             start: (id, _options, urls) => this.options.admission.run({ kind: "start", profileIds: [id] }, async () => {
               await this.authorize(id);
@@ -245,6 +263,7 @@ export class StandaloneCloudLifecycle {
           },
         },
       });
+      if (this.relayUrl) workspace.activate(this.relayUrl);
       this.guard = setInterval(() => { void this.refresh().catch(() => {}); }, 1000);
       this.guard.unref?.();
     } catch (error) {
@@ -260,7 +279,7 @@ export class StandaloneCloudLifecycle {
   async resolve(context?: StandaloneCloudContext, relayUrl?: string): Promise<StakeModeWorkspace> {
     if (!context || !this.context || context.generation !== this.context.generation || context.auth !== this.context.auth || !this.workspace) throw new Error("Sign in to Cloud in Settings first");
     await this.authorize();
-    if (relayUrl) this.workspace.activate(relayUrl);
+    if (relayUrl) this.configureRelayUrl(relayUrl);
     return this.workspace;
   }
 

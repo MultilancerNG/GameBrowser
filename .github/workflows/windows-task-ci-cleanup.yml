@@ -1,4 +1,4 @@
-name: Clean exact stale beta 80 task checks
+name: Cancel superseded task candidate
 on:
   push:
     branches: [main]
@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Cancel only the recorded stale task-created main checks
+      - name: Cancel only the recorded superseded task build
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -20,41 +20,16 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:GH_REPO -cne 'MultilancerNG/GameBrowser') { throw 'Unexpected cleanup repository' }
-          # Fixed task-created runs only. No inputs, tag runs, new candidates or foreign work.
-          # Completed records are skipped; reruns retain the same immutable target identities.
-          $targets = @(
-            @{ run = '43522418810'; job = '132219739797'; sha = '6dba2672c9417cd2c6f8561bc4f128028ec77594' },
-            @{ run = '43522979813'; job = '132221594063'; sha = '87a0e0ff5ac8cae86153a98f514c958b45c7d5f4' },
-            @{ run = '43523470850'; job = '132223301546'; sha = 'a1f8b837a95b644fc890cb7fbb19cc3fc23374c4' }
-          )
-          foreach ($target in $targets) {
-            $runId = $target.run
-            $jobId = $target.job
-            $run = gh api "repos/$env:GH_REPO/actions/runs/$runId" | ConvertFrom-Json -Depth 30
-            if ($LASTEXITCODE -ne 0 -or $run.head_sha -cne $target.sha -or $run.path -cne '.github/workflows/windows.yml' -or $run.event -cne 'push' -or $run.head_branch -cne 'main') {
-              throw 'Exact stale main-run identity guard failed'
-            }
-            $job = gh api "repos/$env:GH_REPO/actions/jobs/$jobId" | ConvertFrom-Json -Depth 30
-            if ($LASTEXITCODE -ne 0 -or [string]$job.run_id -cne $runId -or $job.name -cne 'check') { throw 'Exact stale source-job identity guard failed' }
-            $cancelRequested = $false
-            $tooRecent = $false
-            if ($job.status -ceq 'in_progress') {
-              $test = @($job.steps | Where-Object { $_.name -ceq 'Run bun test' -and $_.status -ceq 'in_progress' })
-              if ($test.Count -ne 1 -or -not $test[0].started_at) { throw 'Recorded main check is no longer in its stalled test step' }
-              $elapsed = ([DateTimeOffset]::UtcNow - [DateTimeOffset]::Parse($test[0].started_at)).TotalSeconds
-              if ($elapsed -lt 600) { $tooRecent = $true }
-              else {
-                $current = gh api "repos/$env:GH_REPO/actions/jobs/$jobId" | ConvertFrom-Json -Depth 30
-                $stillTesting = @($current.steps | Where-Object { $_.name -ceq 'Run bun test' -and $_.status -ceq 'in_progress' })
-                if ($LASTEXITCODE -eq 0 -and $current.status -ceq 'in_progress' -and $stillTesting.Count -eq 1) {
-                  $cancelOutput = gh run cancel $runId 2>&1
-                  if ($LASTEXITCODE -ne 0) { throw 'Exact stale main-check cancellation failed' }
-                  $cancelRequested = $true
-                }
-              }
-            } elseif ($job.status -cne 'completed') { throw 'Recorded main check is not an eligible stale or completed job' }
-            $summary = [ordered]@{ diagnostic = 'stale-beta80-task-check'; runId = [long]$runId;
-              cancelRequested = $cancelRequested; tooRecent = $tooRecent; alreadyCompleted = ($job.status -ceq 'completed') }
-            $json = $summary | ConvertTo-Json -Compress
-            Write-Output "::notice title=Exact task CI cleanup::$json"
+          $runId = '43550175110'
+          $run = gh api "repos/$env:GH_REPO/actions/runs/$runId" | ConvertFrom-Json -Depth 30
+          if ($LASTEXITCODE -ne 0 -or $run.head_sha -cne '068978ce0a7f975630f630479e02194b4cbc3243' -or
+              $run.path -cne '.github/workflows/windows.yml' -or $run.event -cne 'push' -or $run.head_branch -cne 'v0.1.0-beta.83') {
+            throw 'Exact superseded task-run identity guard failed'
           }
+          $cancelled = $false
+          if ($run.status -cne 'completed') {
+            gh run cancel $runId
+            if ($LASTEXITCODE -ne 0) { throw 'Exact superseded task-run cancellation failed' }
+            $cancelled = $true
+          }
+          Write-Output "::notice title=Superseded task candidate::run=$runId cancelRequested=$cancelled previousStatus=$($run.status)"

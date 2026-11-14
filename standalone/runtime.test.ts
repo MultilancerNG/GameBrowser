@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { gameBrowserStateRoot, gameBrowserWorkspaceRoot, startGameBrowser } from "./runtime.ts";
@@ -11,6 +11,7 @@ import { ProfileStore } from "../store.ts";
 import { ProfileLibrary } from "../workspace/profileLibrary.ts";
 import { buildNewProfile } from "../create.ts";
 import { encodePortableProfile } from "../portable-profile.ts";
+import { Launcher } from "../launcher.ts";
 
 const roots: string[] = [];
 const runtimes: Array<Awaited<ReturnType<typeof startGameBrowser>>> = [];
@@ -156,6 +157,9 @@ describe("independent GameBrowser runtime", () => {
       if (path === "/v1/status") return Response.json(status);
       if (path === "/v1/profiles") return Response.json({ ok: true, profiles: [summary] });
       if (path === "/v1/profiles/cloud-only") return Response.json({ ok: true, profile: summary, payload: encodePortableProfile(cloudIdentity), payloadDigest: "mock-payload-digest" });
+      if (path === "/v1/profiles/cloud-only/open") return Response.json({ ok: true, registrationId: "mock-first-open", baseVersion: 1, payload: encodePortableProfile(cloudIdentity), activeOpens: [] });
+      if (path.endsWith("/heartbeat")) return Response.json({ ok: true, revoked: false, activeOpens: [] });
+      if (path.endsWith("/abandon")) return Response.json({ ok: true, status: "abandoned" });
       throw new Error(`Unexpected simulated service route: ${path} (${init?.method ?? "GET"})`);
     } }); runtimes.push(runtime);
     const base = new URL(runtime.url).origin;
@@ -166,13 +170,23 @@ describe("independent GameBrowser runtime", () => {
     expect(configure.status).toBe(200);
     const signIn = await fetch(`${base}/workspace/api/app/cloud/signin`, { method: "POST", headers: localHeaders, body: JSON.stringify({ email: "owner@example.test", password: "mock-password" }) });
     expect(await signIn.json()).toMatchObject({ ok: true, cloud: { authenticated: true } });
+    // Local Settings can open the first Cloud browser before a Cloud page or bootstrap is visited.
+    // Stop at the native boundary and inspect the actual generated extension configuration.
+    const start = spyOn(Launcher.prototype, "start").mockImplementation(async () => { throw new Error("Fixture stopped before actual native spawn"); });
+    try {
+      await fetch(`${base}/workspace/api/app/cloud/profiles/cloud-only/open`, { method: "POST", headers: localHeaders, body: "{}" });
+      expect(start).toHaveBeenCalledTimes(1);
+      const scope = readdirSync(join(root, "live-workspace")).find(name => name.startsWith("cloud-"));
+      const generated = JSON.parse(readFileSync(join(root, "live-workspace", scope!, "sync-extensions", "cloud-only", "config.json"), "utf8"));
+      expect(generated.relayUrl).toBe(`ws://127.0.0.1:${runtime.port}/workspace/cloud/relay`);
+    } finally { start.mockRestore(); }
     const cloudResponse = await fetch(`${base}/workspace/cloud/api/bootstrap`, { headers: sdkHeaders });
     expect(cloudResponse.status).toBe(200);
     const cloud = await cloudResponse.json();
     expect(cloud.token).not.toBe(local.token);
     expect(cloud.relayUrl).toBe(`ws://127.0.0.1:${runtime.port}/workspace/cloud/relay`);
     expect(cloud.snapshot.capabilities.mode).toBe("cloud");
-    expect(cloud.snapshot.profiles).toMatchObject([{ id: "cloud-only", name: "Cloud browser", state: "stopped" }]);
+    expect(cloud.snapshot.profiles).toMatchObject([{ id: "cloud-only", name: "Cloud browser", state: "error", pid: null }]);
     expect(runtime.store.listProfiles()).toEqual([]);
     expect(runtime.workspace.manager.list()).toEqual([]);
     expect((await fetch(`${base}/workspace/cloud/api/snapshot`, { headers: localHeaders })).status).toBe(401);

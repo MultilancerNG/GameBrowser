@@ -131,5 +131,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -cne "v$version") { throw 'Tag must match application version' }
           $notesPath = Join-Path $PWD "release-notes/$version.md"
           if (-not (Test-Path $notesPath -PathType Leaf)) { throw 'Reviewed release notes are missing for this version' }
+          Copy-Item artifacts/windows-smoke.workspace.active.png "artifacts/windows/GameBrowser_${version}_live-workspace.png"
+          Copy-Item artifacts/windows-smoke.workspace.firefox-admin.png "artifacts/windows/GameBrowser_${version}_firefox-admin.png"
           gh release create $env:GITHUB_REF_NAME artifacts/windows/* --verify-tag --title "GameBrowser $version" --notes-file $notesPath --prerelease
           if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

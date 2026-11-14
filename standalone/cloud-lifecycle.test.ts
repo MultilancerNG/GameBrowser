@@ -45,7 +45,7 @@ function profile(id: string, name: string, proxyHost?: string): Profile {
   return { ...buildNewProfile({ name, engine: "chromium", screen: "1280x720" }, () => false), id, name,
     ...(proxyHost ? { proxy: { type: "http" as const, host: proxyHost, port: "8080", user: "fixture-user", pass: "fixture-password" } } : {}) };
 }
-function setup(options: { desktop?: boolean; env?: NodeJS.ProcessEnv } = {}) {
+function setup(options: { desktop?: boolean; env?: NodeJS.ProcessEnv; relayUrl?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), "gamebrowser-cloud-owner-")); roots.push(root);
   spies.push(spyOn(Launcher.prototype, "reconcileOrphans").mockResolvedValue({ cleared: 0 }));
   spies.push(spyOn(Launcher.prototype, "certifySurvivors").mockResolvedValue({ certified: 0, stopped: 0 }));
@@ -109,6 +109,18 @@ test("Cloud composes an actual isolated cache/coordinator/workspace and exposes 
   await expect(app.workspace.manager.bulkCreate({ count: 1 })).rejects.toThrow();
   await owner.signingOut(account.value);
   expect(owner.appContext()).toBeUndefined(); expect(account.auth.hasSession()).toBe(true);
+});
+
+test("Cloud browsers cannot prepare extensions until their own relay route is configured", async () => {
+  const { owner, root } = setup();
+  const account = context("accountA", [{ id: "unconfigured" }]);
+  await owner.authenticate(account.value);
+  const app = owner.appContext()!;
+  await expect(app.workspace.manager.start("unconfigured")).rejects.toThrow();
+  const scope = (app.workspace.snapshot() as { capabilities: { contextKey: string } }).capabilities.contextKey;
+  expect(existsSync(join(root, "live-workspace", scope, "sync-extensions", "unconfigured", "config.json"))).toBe(false);
+  expect(owner.listLaunches()).toEqual([]);
+  expect(() => setup({ relayUrl: "ws://127.0.0.1:8080/relay" })).toThrow("own local Cloud relay route");
 });
 
 test.each([

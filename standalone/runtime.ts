@@ -152,7 +152,9 @@ export async function startGameBrowser(options: GameBrowserStartOptions = {}) {
     if (cloud) return Promise.resolve(cloud);
     return preparingCloud ??= import("./cloud-lifecycle.ts").then(({ StandaloneCloudLifecycle }) => {
       if (stopping) throw new Error("GameBrowser is stopping");
+      if (!server?.port) throw new Error("The local listener must be ready before opening Cloud browsers");
       cloud = new StandaloneCloudLifecycle({ root, assets, syncExtensionRoot: extensionRoot, admission, desktop: !!health,
+        relayUrl: `ws://127.0.0.1:${server.port}/workspace/cloud/relay`,
         binaryPath: options.binaryPath, binarySha256: options.binarySha256,
         firefoxBinaryPath: options.firefoxBinaryPath, firefoxBinarySha256: options.firefoxBinarySha256, env, log,
         appFetch: (request, address) => services?.fetch(request, address, "cloud"),

@@ -1,6 +1,6 @@
 {
   "name": "gamebrowser",
-  "version": "0.1.0-beta.83",
+  "version": "0.1.0-beta.84",
   "description": "Local-first browser profile manager with optional cloud synchronization",
   "module": "GameBrowser-cli.ts",
   "type": "module",
