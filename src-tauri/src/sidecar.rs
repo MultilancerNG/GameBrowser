@@ -350,7 +350,7 @@ fn command_args(data_dir: &Path) -> Vec<OsString> {
         "--data-root".into(),
         data_dir.join("profiles").into_os_string(),
         "--port".into(),
-        "0".into(),
+        "8080".into(),
     ]
 }
 
@@ -364,16 +364,16 @@ fn present_unexpected_exit(app: &AppHandle, code: Option<i32>) {
         if let Ok(url) = fallback.parse() {
             let _ = window.navigate(url);
         }
-        let _ = window.set_title("AliasMode service stopped");
+        let _ = window.set_title("GameBrowser service stopped");
     }
     let detail = code
         .map(|value| format!(" (exit code {value})"))
         .unwrap_or_default();
     app.dialog()
         .message(format!(
-            "AliasMode's local service stopped unexpectedly{detail}. Restart AliasMode before opening another browser. Browser cleanup could not be confirmed."
+            "GameBrowser's local service stopped unexpectedly{detail}. Restart GameBrowser before opening another browser. Browser cleanup could not be confirmed."
         ))
-        .title("AliasMode service stopped")
+        .title("GameBrowser service stopped")
         .kind(MessageDialogKind::Error)
         .buttons(MessageDialogButtons::Ok)
         .show(|_| {});
@@ -568,12 +568,25 @@ pub async fn launch_and_verify(
 #[cfg(test)]
 mod tests {
     use super::{
-        import_command_args, parse_credential_delete, parse_credential_set, parse_ready_line,
+        command_args, import_command_args, parse_credential_delete, parse_credential_set, parse_ready_line,
         should_present_unexpected_exit, verify_health_record, HealthRecord, PROTOCOL, VERSION,
     };
     use std::{ffi::OsString, path::Path};
 
     const NONCE: &str = "abababababababababababababababababababababababababababababababab";
+
+    #[test]
+    fn standalone_desktop_keeps_the_sdk_port_and_native_state_root() {
+        let root = Path::new(r"C:\Users\Player\AppData\Roaming\ng.solomon.gamebrowser");
+        let args = command_args(root);
+        assert_eq!(args.first(), Some(&OsString::from("start")));
+        for option in ["--desktop-root", "--state-root"] {
+            let index = args.iter().position(|arg| arg == option).unwrap();
+            assert_eq!(args.get(index + 1), Some(&root.as_os_str().to_owned()));
+        }
+        let port = args.iter().position(|arg| arg == "--port").unwrap();
+        assert_eq!(args.get(port + 1), Some(&OsString::from("8080")));
+    }
 
     #[test]
     fn accepts_only_nonce_and_pid_bound_readiness() {

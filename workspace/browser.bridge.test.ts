@@ -254,3 +254,30 @@ test("scope revocation during a read-only follower screenshot discards the frame
     expect(frames).toEqual([]);
   } finally { await bridge.stop(); }
 });
+
+test("Chromium without MV3 uses the private binding and a late extension retires that transport without duplicate capture", async () => {
+  const { SyncRelay } = await import("./syncRelay.ts");
+  const relay = new SyncRelay({ preserveAssignments: true }); relay.configure(["https://site.test"]); relay.register("p", "https://site.test"); relay.setRole("p", "admin");
+  const packets: any[] = [], forwarded: any[] = []; let binding: any, nonce = "", privateTransport: any;
+  const frame = {};
+  const page: any = { isClosed: () => false, url: () => "https://site.test/start", mainFrame: () => frame, on() {}, evaluate: async (_code: any, packet?: any) => { if (packet) packets.push(packet); } };
+  const context: any = { pages: () => [page], on() {}, exposeBinding: async (_name: string, callback: any) => { binding = callback; },
+    addInitScript: async ({ content }: any) => { nonce = /const privateCaptureNonce = "([a-zA-Z0-9_-]+)"/.exec(content)![1]!; } };
+  const browser: any = { contexts: () => [context], isConnected: () => true, on() {}, close: async () => {} };
+  const bridge = new BrowserBridge({ controller: "extension", captureFallback: { connected: () => relay.statuses()[0]!.connected, waitMs: 0 },
+    getLaunch: () => ({ engine: "chromium", profileId: "p", pid: 1, ws: "ws://127.0.0.1/owned", startedAt: 1, debugPort: 1 }), getConfig: () => relay.configFor("p"), canControl: () => true,
+    connect: async () => browser, onFrame() {}, onError() {}, onFirefoxConnect: (id, token, transport) => { privateTransport = transport; return relay.authenticate(id, token, transport); },
+    onFirefoxPacket: (_id, _transport, packet) => forwarded.push(packet) });
+  try {
+    await bridge.attach("p"); expect(binding).toBeFunction(); expect(relay.statuses()[0]!.connected).toBe(true);
+    forwarded.length = 0;
+    await binding({ page, frame }, { type: "ACTION", id: "future-action" }, nonce);
+    expect(forwarded.map(packet => packet.type)).toEqual(["PAGE", "ACTION"]);
+    const extension = { send() {}, close() {} }; relay.authenticate("p", relay.tokenFor("p"), extension);
+    forwarded.length = 0; packets.length = 0;
+    await binding({ page, frame }, { type: "ACTION", id: "stale-action" }, nonce);
+    privateTransport.send({ type: "ACTION", id: "late-replay" });
+    expect(forwarded).toHaveLength(0); expect(packets).toHaveLength(0);
+    expect(relay.configFor("p")?.role).toBe("admin");
+  } finally { await bridge.stop(); relay.stop(); }
+});

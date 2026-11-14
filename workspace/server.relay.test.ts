@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import WebSocket from "ws";
 import { StakeModeWorkspace } from "./server.ts";
 
-function fixture(options: { launched?: boolean; control?: (packet: any) => Promise<void>; sync?: any } = {}) {
+function fixture(options: { launched?: boolean; control?: (packet: any) => Promise<void>; sync?: any; syncController?: "relay"; appFetch?: (request: Request) => Response | undefined } = {}) {
   let active = options.launched ?? false, deleted = false;
   const events: string[] = [];
   let bridgeOptions: any;
@@ -15,7 +15,7 @@ function fixture(options: { launched?: boolean; control?: (packet: any) => Promi
     ramMb: 2048, heapMb: 512, headless: true, urls: ["https://stake.com/casino/games/limbo"], manual: true, state: "stopped",
     pid: null, cpuPercent: null, memoryMb: null, processCount: null, metricsVerified: false, overBudget: false,
     resourcePolicy: "monitored", budgetAction: "pause-sync" };
-  const manager: any = { list: () => deleted ? [] : [{ ...profile }, ...(options.sync ? [{ ...profile, id: "admin", name: "Admin" }] : [])], getProfile: (id: string) => !deleted && (id === profile.id || options.sync && id === "admin") ? { ...profile, id } : null,
+  const manager: any = { list: () => deleted ? [] : [{ ...profile }, ...((options.sync || options.syncController) ? [{ ...profile, id: "admin", name: "Admin" }] : [])], getProfile: (id: string) => !deleted && (id === profile.id || (options.sync || options.syncController) && id === "admin") ? { ...profile, id } : null,
     getLaunch: () => active ? { profileId: "profile1", pid: 100, ws: "private-internal-owner", startedAt: 1, debugPort: 5000, firefoxOwner: { token: "never-public" } } : null, onChange: () => () => {}, setManual: (_id: string, manual: boolean) => { profile.manual = manual; return profile; },
     canEditProfile: () => !active && !deleted, deleteProfile: async () => { deleted = true; events.push("delete"); return { deleted: true, profileId: profile.id }; },
     updateNetwork: (_id: string, value: any) => { Object.assign(profile, { networkMode: value.networkMode, networkSummary: value.networkMode }); return { ...profile }; },
@@ -25,7 +25,7 @@ function fixture(options: { launched?: boolean; control?: (packet: any) => Promi
     browserAction: async (id: string, command: any) => { bridgeOptions.beforeBrowserAction(id); events.push(`browser:${command.action}`); return bridge.browserState(); },
     cookies: async (_id: string, origin: string) => ({ profileId: profile.id, origin, cookies: [{ name: "session", value: "cookie-secret" }] }),
     changeCookies: async (id: string, value: any) => { bridgeOptions.beforeBrowserAction(id); return { profileId: id, origin: value.origin, changed: 1 }; } };
-  const workspace = new StakeModeWorkspace({ stateRoot, sync: options.sync, launcher: {} as any, store: {} as any, manager, bridgeFactory: config => { bridgeOptions = config; return bridge; },
+  const workspace = new StakeModeWorkspace({ stateRoot, sync: options.sync, syncController: options.syncController, appFetch: options.appFetch, launcher: {} as any, store: { getProfile: (id: string) => manager.getProfile(id) } as any, manager, bridgeFactory: config => { bridgeOptions = config; return bridge; },
     assets: { "/workspace/dashboard.html": { body: "<!doctype html><title>StakeMode</title>", contentType: "text/html" } },
     extraFetch: req => new URL(req.url).pathname === "/ui/api/health" ? Response.json({ ready: true, desktop: true }) : undefined });
   const request = (path: string, token?: string, body?: unknown) => new Request(`http://127.0.0.1:${workspace.port ?? 8080}/workspace/api/${path}`, {
@@ -322,4 +322,54 @@ test("cookies use direct authenticated HTTP responses and mutations switch the s
     const changed = await workspace.handleRequest(request("profiles/profile1/cookies", token, { action: "clear", origin: "https://ordinary.test" }), "127.0.0.1");
     expect(changed.status).toBe(200); expect(workspace.relay.configFor("profile1")!.role).toBe("manual");
   } finally { await workspace.stop(); rmSync(stateRoot, { recursive: true, force: true }); }
+});
+
+test("independent relay controller owns saved following without the host worker or trusted endpoint restrictions", async () => {
+  const f = fixture({ launched: true, syncController: "relay" });
+  try {
+    const bootstrap = await (await f.workspace.handleRequest(f.request("bootstrap"), "127.0.0.1")).json();
+    expect(f.getBridgeOptions().controller).toBe("extension");
+    const started = await (await f.workspace.handleRequest(f.request("sync", bootstrap.token, { adminId: "admin", followerIds: ["profile1"], saveSession: true }), "127.0.0.1")).json();
+    expect(started).toMatchObject({ adminId: "admin", followerIds: ["profile1"], active: false, waiting: true, saved: true });
+    expect(started.snapshot.profiles.find((row: any) => row.id === "profile1")).toMatchObject({ role: "follower", syncMechanism: "Manifest V3 extension / authenticated page binding", connected: false });
+    expect(started.snapshot.policy.credentialsMirrored).toBe(false);
+    const adminConfig = f.workspace.relay.configFor("admin")!;
+    const followerConfig = f.workspace.relay.configFor("profile1")!;
+    const transport = () => ({ send() {}, close() {} });
+    f.workspace.relay.authenticate("admin", adminConfig.token, transport());
+    f.workspace.relay.authenticate("profile1", followerConfig.token, transport());
+    expect((f.workspace.snapshot() as any).syncSession.active).toBe(true);
+    f.workspace.relay.disconnect("profile1");
+    expect((f.workspace.snapshot() as any).profiles.find((row: any) => row.id === "profile1").role).toBe("follower");
+    await f.workspace.quiesce();
+    expect((await import("./sessionController.ts")).RelaySessionController).toBeDefined();
+    expect(f.manager.getLaunch("profile1")).not.toBeNull();
+    const saved = JSON.parse(readFileSync(join(f.stateRoot, "workspace", "following-session.json"), "utf8"));
+    expect(saved).toMatchObject({ adminId: "admin", followerIds: ["profile1"] });
+  } finally { await f.workspace.stop({ stopSync: false }); rmSync(f.stateRoot, { recursive: true, force: true }); }
+});
+
+test("standalone application routes run only after local origin and dashboard token authentication", async () => {
+  let calls = 0;
+  const f = fixture({ appFetch: request => new URL(request.url).pathname === "/workspace/api/app/probe" ? (calls++, Response.json({ ok: true })) : undefined });
+  try {
+    expect((await f.workspace.handleRequest(f.request("app/probe"), "127.0.0.1")).status).toBe(401);
+    expect(calls).toBe(0);
+    const bootstrap = await (await f.workspace.handleRequest(f.request("bootstrap"), "127.0.0.1")).json();
+    const crossOrigin = f.request("app/probe", bootstrap.token, {}); crossOrigin.headers.set("origin", "https://foreign.test");
+    expect((await f.workspace.handleRequest(crossOrigin, "127.0.0.1")).status).toBe(403);
+    expect(calls).toBe(0);
+    expect((await f.workspace.handleRequest(f.request("app/probe", bootstrap.token, {}), "127.0.0.1")).status).toBe(200);
+    expect(calls).toBe(1);
+  } finally { await f.workspace.stop(); rmSync(f.stateRoot, { recursive: true, force: true }); }
+});
+
+test("Cloud prelaunch preparation requires the exact cached identity and cannot prepare another profile", async () => {
+  const f = fixture({ launched: true, syncController: "relay" });
+  try {
+    await f.workspace.prepareLaunch("profile1", f.profile);
+    await expect(f.workspace.prepareLaunch("profile1", { ...f.profile, name: "Changed identity" })).rejects.toThrow("identity or access changed");
+    await expect(f.workspace.prepareLaunch("admin", f.profile)).rejects.toThrow("identity or access changed");
+    await expect(f.workspace.prepareLaunch("missing", { ...f.profile, id: "missing" })).rejects.toThrow("identity or access changed");
+  } finally { await f.workspace.stop(); rmSync(f.stateRoot, { recursive: true, force: true }); }
 });

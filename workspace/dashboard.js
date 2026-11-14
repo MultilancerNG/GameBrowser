@@ -4,6 +4,8 @@
   "use strict";
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const workspaceBase = location.pathname.startsWith("/workspace/cloud/") ? "/workspace/cloud" : "/workspace";
+  function desktopInvoke() { const invoke = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke; return typeof invoke === "function" ? invoke : null; }
   const state = { token: "", relayUrl: "", snapshot: { profiles: [], origins: [], pacing: "fast" }, socket: null, connected: false, view: "live", filter: "all", search: "", tiles: new Map(), rows: new Map(), subscriptions: new Set(), busy: new Set(), focusedProfile: null, killId: null, navigateId: null, browserProfileId: null, browserStates: new Map(), browserBusy: new Set(), browserStopBusy: new Set(), settingsProfileId: null, deleteProfileId: null, extensions: [], extensionsLoading: false, assignments: new Map(), reviewedExtensionId: null, extensionRemoval: null, reconnect: null, retry: 0, booting: false, toastTimer: null, disposed: false };
   const icons = { screen: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>' };
   const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -40,12 +42,12 @@
       const headers = { "X-StakeMode-Workspace": "1", Accept: "application/json" };
       if (!bootstrap) { if (!state.token) throw new Error("The local workspace is not connected yet."); headers.Authorization = `Bearer ${state.token}`; }
       if (body !== undefined) headers["Content-Type"] = "application/json";
-      const response = await fetch(`/workspace/api/${path}`, { method: method || (body === undefined ? "GET" : "POST"), headers, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal, credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
+      const response = await fetch(`${workspaceBase}/api/${path}`, { method: method || (body === undefined ? "GET" : "POST"), headers, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal, credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
       const content = await response.text();
       if (content.length > 4 * 1024 * 1024) throw new Error("The local server returned an oversized response.");
       let data;
       try { data = JSON.parse(content); } catch { throw new Error("The local server returned an invalid response. Restart GameBrowser and try again."); }
-      if (response.status === 401 && !bootstrap) { state.token = ""; connection(false, "Session expired · reconnecting"); scheduleReconnect(true); }
+      if (response.status === 401 && !bootstrap && !path.startsWith("app/")) { state.token = ""; connection(false, "Session expired · reconnecting"); scheduleReconnect(true); }
       if (!response.ok || (data.error && data.ok !== true && !(path === "sync" && "adminId" in data))) throw new Error(typeof data.error === "string" ? data.error : `Local request failed (${response.status}).`);
       if (data.snapshot && path !== "sync") applySnapshot(data.snapshot);
       return data;
@@ -116,7 +118,7 @@
       if (socket !== state.socket || typeof event.data !== "string" || event.data.length > 6 * 1024 * 1024) return;
       let packet;
       try { packet = JSON.parse(event.data); } catch { connection(false, "Invalid relay data"); socket.close(); return; }
-      if (packet.type === "SNAPSHOT" && packet.snapshot) { const authenticated = !state.connected; connection(true, "Relay connected"); applySnapshot(packet.snapshot); if (authenticated) { refreshActiveView(); loadWorkspacePreferences(); loadFollowingStatus(); loadLibrary(); } }
+      if (packet.type === "SNAPSHOT" && packet.snapshot) { const authenticated = !state.connected; connection(true, "Relay connected"); applySnapshot(packet.snapshot); if (authenticated) { refreshActiveView(); loadWorkspacePreferences(); loadFollowingStatus(); loadLibrary(); if (state.initialSettings) { state.initialSettings = false; openAppSettings(); } } }
       else if (packet.type === "FRAME") drawFrame(packet);
       else if (packet.type === "BROWSER_STATE" && packet.browser) applyBrowserState(packet.browser, false);
       else if (packet.type === "FRAME_ERROR") setFrameError(String(packet.profileId || ""), String(packet.error || "Live view unavailable"));
@@ -177,7 +179,7 @@
 
   function actions(id) {
     const wrap = document.createElement("div"); wrap.className = "row-actions";
-    for (const [action, label] of [["browser", "Full view"], ["settings", "Settings"], ["organize", "Organize"], ["copy", "Copy config"], ["delete", "Delete local"], ["start", "Start"], ["stop", "Stop"], ["pause", "Pause sync"], ["manual", "Manual"], ["kill", "Force kill"]]) { const button = document.createElement("button"); button.className = `button ${["kill", "delete"].includes(action) ? "danger" : "subtle"}${["organize", "copy"].includes(action) ? " library-row-action" : ""}`; button.dataset.action = action; button.dataset.profileId = id; button.textContent = label; wrap.append(button); }
+    for (const [action, label] of [["browser", "Full view"], ["settings", "Settings"], ["organize", "Organize"], ["copy", "Copy config"], ["delete", "Move to Trash"], ["start", "Start"], ["stop", "Stop"], ["pause", "Pause sync"], ["manual", "Manual"], ["kill", "Force kill"]]) { const button = document.createElement("button"); button.className = `button ${["kill", "delete"].includes(action) ? "danger" : "subtle"}${["organize", "copy"].includes(action) ? " library-row-action" : ""}`; button.dataset.action = action; button.dataset.profileId = id; button.textContent = label; wrap.append(button); }
     return wrap;
   }
 
@@ -551,14 +553,18 @@
     const profile = getProfile(state.settingsProfileId); if (!profile) { $("#profile-settings-dialog").close(); return; }
     const stopped = profileStopped(profile) && profile.managementAvailable !== false;
     $("#network-settings-fields").disabled = !stopped || state.busy.has(profileId(profile)); $("#network-save").disabled = !stopped || state.busy.has(profileId(profile));
-    $("#screen-settings-fields").disabled = !stopped || state.busy.has(profileId(profile)); $("#screen-save").disabled = !stopped || state.busy.has(profileId(profile));
+    const ownIdentityEditable = profileStopped(profile) && (profile.permission == null || profile.permission === "edit");
+    $("#identity-fields").disabled = !ownIdentityEditable || $("#profile-identity-form").dataset.profileId !== profileId(profile) || state.busy.has(profileId(profile)); $("#identity-save").disabled = $("#identity-fields").disabled;
+    const screenEditable = workspaceBase === "/workspace/cloud" ? ownIdentityEditable && $("#profile-identity-form").dataset.profileId === profileId(profile) : stopped;
+    $("#screen-settings-fields").disabled = !screenEditable || state.busy.has(profileId(profile)); $("#screen-save").disabled = $("#screen-settings-fields").disabled;
+    text($("#screen-stopped-notice"), screenEditable ? "Viewport changes apply at the next profile start. Live canvases keep the browser’s actual aspect ratio." : "Stop this profile to change its viewport. Live canvases keep the browser’s actual aspect ratio.");
     text($("#screen-stored"), Number.isSafeInteger(profile.screenWidth) && Number.isSafeInteger(profile.screenHeight) ? `Stored browser viewport: ${profile.screenWidth.toLocaleString()} × ${profile.screenHeight.toLocaleString()} px` : "Stored browser viewport is unavailable.");
-    $("#profile-delete-button").disabled = !stopped || state.busy.has(profileId(profile));
+    $("#profile-delete-button").disabled = !ownIdentityEditable || state.busy.has(profileId(profile));
     const cookieAllowed = isRunning(profile) && profileRole(profile) !== "follower";
     for (const selector of ["#cookie-export", "#cookie-show-import"]) $(selector).disabled = !cookieAllowed;
     $("#cookie-clear").disabled = !cookieAllowed || !$("#cookie-form").elements.confirmClear.checked;
     $$("[data-assignment-toggle],[data-assignment-remove]", $("#profile-extension-list")).forEach(button => { button.disabled = !stopped || state.busy.has(profileId(profile)); });
-    text($("#network-stopped-notice"), stopped ? "Network and extension changes apply the next time this profile starts." : "Stop this profile before changing its network or extension assignments.");
+    text($("#network-stopped-notice"), profile.managementAvailable === false ? "Network and extension assignments are read-only in this Cloud workspace." : stopped ? "Network and extension changes apply the next time this profile starts." : "Stop this profile before changing its network or extension assignments.");
     text($("#network-stored"), `Stored route: ${profile.networkSummary || profile.networkMode || "direct"}${profile.proxy && profile.networkMode !== "proxy" ? " · a proxy endpoint is saved for later use" : ""}`);
   }
 
@@ -586,17 +592,12 @@
     try { cookieForm.elements.origin.value = new URL(active?.url || profile.url || profile.urls?.[0] || profile.origin).origin; } catch { cookieForm.elements.origin.value = ""; }
     updateProfileSettingsAvailability();
     loadResourcePolicy(id);
+    loadProfileIdentity(id);
     if (profile.managementAvailable !== false) await loadProfileExtensions(id);
-    else { $("#profile-extension-list").replaceChildren(); text($("#profile-extensions-error"), "Manage this Cloud profile’s extensions and identity in Profiles."); }
+    else { $("#profile-extension-list").replaceChildren(); text($("#profile-extensions-error"), "Cloud extension assignments are read-only in this workspace."); }
   }
 
-  function openDeleteProfile(id) {
-    const profile = getProfile(id); if (!profile || !profileStopped(profile)) return;
-    state.deleteProfileId = id; $("#delete-form").reset(); $("#delete-submit").disabled = true; text($("#delete-error"), "");
-    text($("#delete-profile-copy"), `${profile.name || id} · ${id}`);
-    const label = $("#delete-confirm-label"); label.firstChild.textContent = `Type this exact profile ID: ${id}`; $("#delete-form").elements.confirmation.placeholder = id;
-    $("#delete-dialog").showModal();
-  }
+  function openDeleteProfile(id) { const profile = getProfile(id); if (!profile || !profileStopped(profile)) return; $("#profile-settings-dialog").close(); openWorkspaceTrash([id]); }
 
   function makeElement(tag, className, value) { const element = document.createElement(tag); if (className) element.className = className; if (value !== undefined) element.textContent = String(value); return element; }
 
@@ -812,7 +813,6 @@
   }
 
   function openCreate() {
-    if (state.snapshot.capabilities?.identityManagement === false) { location.href = manageProfilesUrl(); return; }
     const form = $("#create-form"); $("#create-error").textContent = "";
     const origins = state.snapshot.origins;
     if (origins.length && !form.elements.origin.value) form.elements.origin.value = origins[0];
@@ -857,13 +857,9 @@
   }
 
   function applyWorkspaceVersion(version) { if ((typeof version !== "string" && typeof version !== "number") || !String(version).trim()) return; for (const label of $$(".workspace-version")) { label.hidden = false; text(label, String(version)); label.title = "Installed GameBrowser version"; } }
-  function manageProfilesUrl() { return state.snapshot.capabilities?.manageProfilesUrl || "/?view=profiles"; }
-  function settingsUrl() { return state.snapshot.capabilities?.settingsUrl || "/?view=settings&tab=team"; }
   function renderCapabilities() {
     const capabilities = state.snapshot.capabilities || {};
-    $("#manage-profiles-link").href = manageProfilesUrl(); $("#cloud-settings-link").href = settingsUrl();
     $("#profile-management-toolbar").classList.toggle("cloud-managed", capabilities.identityManagement === false);
-    if (capabilities.identityManagement === false) text($("#view-hint"), "Cloud identity and sharing are managed in Profiles");
   }
   function sortedProfiles(profiles) {
     const ranks = new Map(workspaceUi.order.map((id, i) => [id, i])), selected = new Map([...workspaceUi.selected].reverse().map((id, i) => [id, i]));
@@ -873,14 +869,13 @@
       return (selected.get(a) ?? Infinity) - (selected.get(b) ?? Infinity) || adminA - adminB || (ranks.get(a) ?? Infinity) - (ranks.get(b) ?? Infinity) || profiles.indexOf(left) - profiles.indexOf(right);
     });
   }
-  async function centralApi(path, body) {
-    const response = await fetch(path, { method: body === undefined ? "GET" : "POST", headers: body === undefined ? { Accept: "application/json" } : { Accept: "application/json", "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), credentials: "same-origin", cache: "no-store" });
-    const result = await response.json(); if (!response.ok || result.ok === false) throw new Error(result.error || `Request failed (${response.status}).`); return result;
+  async function appApi(path, body) {
+    return api(`app/${path}`, body);
   }
   async function loadWorkspacePreferences() {
     if (workspaceUi.orderReady) return;
     const context = workspaceUi.contextKey;
-    try { const result = await centralApi("/ui/api/profile-order"); if (context !== workspaceUi.contextKey) return; workspaceUi.order = Array.isArray(result.ids) ? result.ids.filter(id => typeof id === "string") : []; workspaceUi.orderReady = true; render(); }
+    try { const result = await appApi("profile-order"); if (context !== workspaceUi.contextKey) return; workspaceUi.order = Array.isArray(result.ids) ? result.ids.filter(id => typeof id === "string") : []; workspaceUi.orderReady = true; render(); }
     catch (error) { showError(error); }
   }
   async function arrangeProfiles(source, target, after = false) {
@@ -890,16 +885,16 @@
     const selectedBefore = new Set(workspaceUi.selected);
     if (workspaceUi.selected.has(source) && workspaceUi.selected.has(target)) workspaceUi.selected = new Set(ids.filter(id => workspaceUi.selected.has(id)).reverse());
     render();
-    try { await centralApi("/ui/api/profile-order", { ids }); toast("Profile order saved on this device."); }
+    try { await appApi("profile-order", { ids }); toast("Profile order saved on this device."); }
     catch (error) { workspaceUi.order = before; workspaceUi.selected = selectedBefore; render(); showError(error); }
     finally { workspaceUi.orderSaving = false; }
   }
   function desiredFollowing() {
-    const profiles = [...workspaceUi.selected].map(getProfile).filter(Boolean), chromium = profiles.filter(profile => profile.engine !== "firefox");
-    const admin = chromium.find(profile => profileId(profile) === workspaceUi.adminChoice) || chromium.at(-1);
+    const profiles = [...workspaceUi.selected].map(getProfile).filter(Boolean);
+    const admin = profiles.find(profile => profileId(profile) === workspaceUi.adminChoice) || profiles.at(-1);
     const adminId = admin ? profileId(admin) : null, followerIds = profiles.map(profileId).filter(id => id !== adminId);
     const invalid = profiles.some(profile => !isRunning(profile) || (profile.permission != null && profile.permission !== "edit"));
-    return { adminId, followerIds, valid: Boolean(adminId && followerIds.length && !invalid), reason: profiles.length < 2 ? "Select at least two running profiles." : !adminId ? "A Chromium Admin is required. Firefox can follow." : invalid ? "Start selected profiles and use profiles you can edit." : "" };
+    return { adminId, followerIds, valid: Boolean(adminId && followerIds.length && !invalid), reason: profiles.length < 2 ? "Select at least two running profiles." : !adminId ? "Choose an Admin from the selected profiles." : invalid ? "Start selected profiles and use profiles you can edit." : "" };
   }
   function sameFollowing(left, right) { return left.adminId === right.adminId && [...(left.followerIds || [])].sort().join("|") === [...(right.followerIds || [])].sort().join("|"); }
   function selectLiveProfile(id, selected) {
@@ -943,7 +938,7 @@
   }
   function renderFollowing() {
     const sync = workspaceUi.sync, desired = desiredFollowing(), hasGroup = Boolean(sync.adminId), select = $("#following-admin"), signature = JSON.stringify([...workspaceUi.selected].map(id => [id, getProfile(id)?.name, getProfile(id)?.engine]));
-    if (select._signature !== signature) { select._signature = signature; select.replaceChildren(); const empty = makeElement("option", "", "Select profiles below"); empty.value = ""; select.append(empty); for (const id of workspaceUi.selected) { const profile = getProfile(id); if (!profile || profile.engine === "firefox") continue; const option = makeElement("option", "", profile.name || id); option.value = id; select.append(option); } }
+    if (select._signature !== signature) { select._signature = signature; select.replaceChildren(); const empty = makeElement("option", "", "Select profiles below"); empty.value = ""; select.append(empty); for (const id of workspaceUi.selected) { const profile = getProfile(id); if (!profile) continue; const option = makeElement("option", "", profile.name || id); option.value = id; select.append(option); } }
     if (document.activeElement !== select) select.value = desired.adminId || "";
     select.disabled = !desired.adminId;
     $("#following-apply").textContent = hasGroup ? "Apply selection" : "Start following";
@@ -967,16 +962,31 @@
   }
   async function loadResourcePolicy(id) {
     workspaceUi.resourceId = id; const form = $("#profile-resource-form"); form.reset(); $("#resource-save").disabled = true; text($("#resource-error"), ""); text($("#resource-summary"), "Reading this device’s resource policy…");
-    try { const result = await centralApi(`/ui/api/profiles/${encodeURIComponent(id)}/resources`); if (workspaceUi.resourceId !== id || state.settingsProfileId !== id) return; const policy = result.policy || {}, value = policy.ramBudgetMb; workspaceUi.resourcePolicies.set(id, policy); renderBookmarks(); const option = [...form.elements.ramBudgetMb.options].some(item => item.value === String(value)); form.elements.ramBudgetMb.value = value == null ? "" : option ? String(value) : "custom"; form.elements.customRam.value = value ?? 2048; $("#custom-ram-label").hidden = form.elements.ramBudgetMb.value !== "custom"; form.elements.autoOptimize.checked = policy.autoOptimize === true; form.elements.alwaysShowBookmarks.checked = policy.alwaysShowBookmarks === true; form._bookmarks = policy.alwaysShowBookmarks; text($("#resource-summary"), `${result.allocation?.mode === "auto" || value == null ? "Auto allocation" : "Manual allocation"}${result.allocation?.budgetMb ? ` · ${number(result.allocation.budgetMb)} MB` : ""} · ${policy.autoOptimize ? "optimization applies at next launch" : "optimizer off"}.`); const editable = getProfile(id)?.permission == null || getProfile(id).permission === "edit"; for (const control of [...form.elements]) control.disabled = !editable; }
+    try { const result = await appApi(`profiles/${encodeURIComponent(id)}/resources`); if (workspaceUi.resourceId !== id || state.settingsProfileId !== id) return; const policy = result.policy || {}, value = policy.ramBudgetMb; workspaceUi.resourcePolicies.set(id, policy); renderBookmarks(); const option = [...form.elements.ramBudgetMb.options].some(item => item.value === String(value)); form.elements.ramBudgetMb.value = value == null ? "" : option ? String(value) : "custom"; form.elements.customRam.value = value ?? 2048; $("#custom-ram-label").hidden = form.elements.ramBudgetMb.value !== "custom"; form.elements.autoOptimize.checked = policy.autoOptimize === true; form.elements.alwaysShowBookmarks.checked = policy.alwaysShowBookmarks === true; form._bookmarks = policy.alwaysShowBookmarks; text($("#resource-summary"), `${result.allocation?.mode === "auto" || value == null ? "Auto allocation" : "Manual allocation"}${result.allocation?.budgetMb ? ` · ${number(result.allocation.budgetMb)} MB` : ""} · ${policy.autoOptimize ? "optimization applies at next launch" : "optimizer off"}.`); const editable = getProfile(id)?.permission == null || getProfile(id).permission === "edit"; for (const control of [...form.elements]) control.disabled = !editable; }
     catch (error) { if (workspaceUi.resourceId !== id || state.settingsProfileId !== id) return; text($("#resource-error"), errorMessage(error)); text($("#resource-summary"), "Resource policy unavailable."); }
   }
   function openTransfer(kind) {
-    const exporting = kind === "export"; text($("#transfer-title"), exporting ? "Export profiles" : "Import profiles"); text($("#transfer-profiles-link"), exporting ? "Open profile export" : "Open profile import"); $("#transfer-profiles-link").href = `${manageProfilesUrl()}&action=${exporting ? "export" : "import"}`; $("#transfer-profiles-link").dataset.kind = kind; text($("#transfer-config-button"), exporting ? "Export configuration template" : "Import configuration template"); $("#transfer-config-button").dataset.kind = kind; $("#transfer-dialog").showModal();
+    if (appUi.transferBusy) return;
+    appUi.transferKind = kind; const exporting = kind === "export", form = $("#transfer-form"); form.reset();
+    text($("#transfer-title"), exporting ? "Export profiles" : "Import profiles"); text($("#transfer-submit"), exporting ? "Download profiles" : "Import profiles"); text($("#transfer-error"), "");
+    text($("#transfer-description"), exporting ? "Save selected profiles to a portable file. Browser identity and saved session data are included where the format supports them." : "Restore profile exports without leaving GameBrowser. Imported profiles are added to this workspace.");
+    $("#transfer-import-fields").hidden = exporting; $("#transfer-export-fields").hidden = !exporting;
+    form.elements.files.required = !exporting; form.elements.files.disabled = exporting; form.elements.ids.disabled = !exporting;
+    form.elements.ids.replaceChildren(); const selected = state.view === "profiles" && libraryState.selected.size ? libraryState.selected : workspaceUi.selected;
+    for (const profile of sortedProfiles(state.snapshot.profiles)) { const id = profileId(profile), option = makeElement("option", "", `${profile.name || id} · ${engineLabel(profile)}`); option.value = id; option.selected = selected.size ? selected.has(id) : true; form.elements.ids.append(option); }
+    fillGroupSelect(form.elements.groupId, workspaceBase === "/workspace/cloud" ? "Choose a Cloud destination group" : "Keep the exported group"); form.elements.groupId.required = !exporting && workspaceBase === "/workspace/cloud"; form.elements.groupId.disabled = exporting;
+    text($("#transfer-config-button"), exporting ? "Export configuration template" : "Import configuration template"); $("#transfer-config-button").dataset.kind = kind; $("#transfer-dialog").showModal(); if (!exporting && workspaceBase === "/workspace/cloud") loadCloudTransferGroups();
+  }
+  async function loadCloudTransferGroups() {
+    const select = $("#transfer-form").elements.groupId; select.disabled = true; text($("#transfer-error"), "Reading Cloud groups…");
+    try { const result = await api("app/cloud/groups"); if (!$("#transfer-dialog").open || appUi.transferKind !== "import") return; select.replaceChildren(); const empty = makeElement("option", "", "Choose a Cloud destination group"); empty.value = ""; select.append(empty); for (const folder of result.folders || []) { if (folder.archivedAt != null || folder.permission && folder.permission !== "edit") continue; const option = makeElement("option", "", folder.label || folder.name); option.value = folder.name; select.append(option); } text($("#transfer-error"), select.options.length > 1 ? "" : "No editable Cloud groups are available. Ask your workspace administrator for group access."); }
+    catch (error) { text($("#transfer-error"), errorMessage(error)); }
+    finally { if (appUi.transferKind === "import") select.disabled = false; }
   }
   async function ensureBookmarkPolicy(id) {
     if (!id || workspaceUi.resourcePolicies.has(id) || workspaceUi.resourceLoading.has(id)) return;
     const context = workspaceUi.contextKey; workspaceUi.resourceLoading.add(id);
-    try { const result = await centralApi(`/ui/api/profiles/${encodeURIComponent(id)}/resources`); if (context !== workspaceUi.contextKey) return; workspaceUi.resourcePolicies.set(id, result.policy || {}); renderBookmarks(); }
+    try { const result = await appApi(`profiles/${encodeURIComponent(id)}/resources`); if (context !== workspaceUi.contextKey) return; workspaceUi.resourcePolicies.set(id, result.policy || {}); renderBookmarks(); }
     catch { /* Resource settings remain available in Profile settings. */ }
     finally { if (context === workspaceUi.contextKey) workspaceUi.resourceLoading.delete(id); }
   }
@@ -1003,9 +1013,9 @@
   function renderSelectionTools() { const count = [...workspaceUi.selected].filter(id => getProfile(id)).length; $("#live-selection-tools").hidden = state.view !== "live" || count === 0; text($("#live-selection-count"), `${count} selected`); }
   function updateTrashConfirmation() { $("#workspace-trash-submit").disabled = Number($("#workspace-trash-form").elements.confirmation.value) !== workspaceUi.trashIds.length || !workspaceUi.trashIds.length || workspaceUi.trashIds.some(id => !profileStopped(getProfile(id))); }
   $("#live-clear-selection").addEventListener("click", () => { workspaceUi.selected.clear(); workspaceUi.adminChoice = ""; render(); scheduleAutoFollowing(); });
-  $("#live-trash-selected").addEventListener("click", () => { workspaceUi.trashIds = [...workspaceUi.selected].filter(id => getProfile(id)); if (!workspaceUi.trashIds.length) return; $("#workspace-trash-form").reset(); text($("#workspace-trash-title"), `Move ${workspaceUi.trashIds.length} profiles to Trash`); text($("#workspace-trash-copy"), workspaceUi.trashIds.map(id => getProfile(id)?.name || id).join(", ")); const open = workspaceUi.trashIds.filter(id => !profileStopped(getProfile(id))); text($("#workspace-trash-error"), open.length ? `${open.length} selected profiles are open. Stop them first; the selection is retained.` : ""); updateTrashConfirmation(); $("#workspace-trash-dialog").showModal(); });
+  $("#live-trash-selected").addEventListener("click", () => openWorkspaceTrash([...workspaceUi.selected]));
   $("#workspace-trash-form").elements.confirmation.addEventListener("input", updateTrashConfirmation);
-  $("#workspace-trash-form").addEventListener("submit", async event => { event.preventDefault(); updateTrashConfirmation(); if ($("#workspace-trash-submit").disabled) return; const ids = [...workspaceUi.trashIds]; $("#workspace-trash-submit").disabled = true; text($("#workspace-trash-error"), ""); try { const result = await centralApi("/ui/api/profiles/delete", { ids }); const fresh = await api("snapshot"); applySnapshot(fresh.snapshot || fresh); const remaining = ids.filter(id => getProfile(id)); workspaceUi.selected = new Set(remaining); render(); if (remaining.length || result.locked?.length || result.failed?.length) text($("#workspace-trash-error"), `${result.deleted || 0} profiles moved to Trash. Remaining profiles stay selected; check their access and stop open browsers before retrying.`); else { $("#workspace-trash-dialog").close(); toast(`${result.deleted || ids.length} profiles moved to Trash. Restore them from Profiles → Trash.`); } } catch (error) { text($("#workspace-trash-error"), errorMessage(error)); } finally { updateTrashConfirmation(); } });
+  $("#workspace-trash-form").addEventListener("submit", async event => { event.preventDefault(); updateTrashConfirmation(); if ($("#workspace-trash-submit").disabled) return; const ids = [...workspaceUi.trashIds]; $("#workspace-trash-submit").disabled = true; text($("#workspace-trash-error"), ""); try { const result = await appApi("profiles/trash", { ids }); const fresh = await api("snapshot"); applySnapshot(fresh.snapshot || fresh); const remaining = ids.filter(id => getProfile(id)); workspaceUi.selected = new Set(remaining); render(); if (remaining.length || result.locked?.length || result.failed?.length) text($("#workspace-trash-error"), `${result.deleted ?? result.results?.filter(item => item.status === "trashed").length ?? 0} profiles moved to Trash. Remaining profiles stay selected; check their access and stop open browsers before retrying.`); else { $("#workspace-trash-dialog").close(); toast(`${result.deleted ?? result.results?.filter(item => item.status === "trashed").length ?? ids.length} profiles moved to Trash. Open Trash to restore them.`); } } catch (error) { text($("#workspace-trash-error"), errorMessage(error)); } finally { updateTrashConfirmation(); } });
   $("#following-admin").addEventListener("change", event => { const id = event.target.value; if (!id) return; workspaceUi.adminChoice = id; workspaceUi.selected.delete(id); workspaceUi.selected.add(id); render(); scheduleAutoFollowing(); });
   $("#auto-follow-selection").addEventListener("change", event => { workspaceUi.autoFollow = event.target.checked; workspaceUi.adminChoice = ""; renderFollowing(); scheduleAutoFollowing(); });
   $("#following-controls-toggle").addEventListener("click", () => { workspaceUi.followingExpanded = !workspaceUi.followingExpanded; renderFollowing(); });
@@ -1013,16 +1023,162 @@
   $("#following-apply").addEventListener("click", () => changeFollowing("apply")); $("#following-stop").addEventListener("click", () => changeFollowing("stop")); $("#following-save").addEventListener("click", () => changeFollowing("save")); $("#following-resume").addEventListener("click", () => changeFollowing("resume"));
   $("#live-group-filter").addEventListener("change", event => { libraryState.groupFilter = event.target.value; $("#profile-group-filter").value = event.target.value; render(); });
   for (const [id, single] of [["grid-layout", false], ["list-layout", true]]) $("#" + id).addEventListener("click", () => { $("#live-grid").classList.toggle("single-column", single); for (const [buttonId, pressed] of [["grid-layout", !single], ["list-layout", single]]) { $("#" + buttonId).classList.toggle("selected", pressed); $("#" + buttonId).setAttribute("aria-pressed", String(pressed)); } });
-  $("#transfer-profiles-link").addEventListener("click", event => {
-    if (event.currentTarget.dataset.kind !== "export") return;
-    const ids = [...workspaceUi.selected].filter(id => getProfile(id));
-    try { if (ids.length) sessionStorage.setItem("gamebrowser.liveExportSelection", JSON.stringify({ ids, at: Date.now() })); else sessionStorage.removeItem("gamebrowser.liveExportSelection"); }
-    catch { event.preventDefault(); showError("This browser could not carry the selected profiles to Export. Allow session storage and try again."); }
-  });
   $("#workspace-import").addEventListener("click", () => openTransfer("import")); $("#workspace-export").addEventListener("click", () => openTransfer("export"));
   $("#transfer-config-button").addEventListener("click", event => { $("#transfer-dialog").close(); setView("profiles"); $("#" + (event.currentTarget.dataset.kind === "export" ? "export-config-button" : "import-config-button")).click(); });
   $("#profile-resource-form").elements.ramBudgetMb.addEventListener("change", event => { $("#custom-ram-label").hidden = event.target.value !== "custom"; });
-  $("#profile-resource-form").addEventListener("submit", async event => { event.preventDefault(); const id = state.settingsProfileId, form = event.currentTarget; if (!id || (getProfile(id)?.permission != null && getProfile(id).permission !== "edit")) return; const context = workspaceUi.contextKey; const raw = form.elements.ramBudgetMb.value, ramBudgetMb = raw === "" ? null : Number(raw === "custom" ? form.elements.customRam.value : raw); if (ramBudgetMb !== null && (!Number.isInteger(ramBudgetMb) || ramBudgetMb < 128 || ramBudgetMb > 32768)) { text($("#resource-error"), "Use a whole number from 128 to 32,768 MB."); return; } $("#resource-save").disabled = true; text($("#resource-error"), ""); try { const bookmarks = form.elements.alwaysShowBookmarks.checked; await centralApi(`/ui/api/profiles/${encodeURIComponent(id)}/resources`, { ramBudgetMb, autoOptimize: form.elements.autoOptimize.checked, ...(bookmarks !== (form._bookmarks === true) ? { alwaysShowBookmarks: bookmarks } : {}) }); if (context !== workspaceUi.contextKey || state.settingsProfileId !== id || workspaceUi.resourceId !== id) return; await loadResourcePolicy(id); toast("Resource settings saved for the next launch."); } catch (error) { if (context !== workspaceUi.contextKey || state.settingsProfileId !== id || workspaceUi.resourceId !== id) return; text($("#resource-error"), errorMessage(error)); $("#resource-save").disabled = false; } });
+  $("#profile-resource-form").addEventListener("submit", async event => { event.preventDefault(); const id = state.settingsProfileId, form = event.currentTarget; if (!id || (getProfile(id)?.permission != null && getProfile(id).permission !== "edit")) return; const context = workspaceUi.contextKey; const raw = form.elements.ramBudgetMb.value, ramBudgetMb = raw === "" ? null : Number(raw === "custom" ? form.elements.customRam.value : raw); if (ramBudgetMb !== null && (!Number.isInteger(ramBudgetMb) || ramBudgetMb < 128 || ramBudgetMb > 32768)) { text($("#resource-error"), "Use a whole number from 128 to 32,768 MB."); return; } $("#resource-save").disabled = true; text($("#resource-error"), ""); try { const bookmarks = form.elements.alwaysShowBookmarks.checked; await appApi(`profiles/${encodeURIComponent(id)}/resources`, { ramBudgetMb, autoOptimize: form.elements.autoOptimize.checked, ...(bookmarks !== (form._bookmarks === true) ? { alwaysShowBookmarks: bookmarks } : {}) }); if (context !== workspaceUi.contextKey || state.settingsProfileId !== id || workspaceUi.resourceId !== id) return; await loadResourcePolicy(id); toast("Resource settings saved for the next launch."); } catch (error) { if (context !== workspaceUi.contextKey || state.settingsProfileId !== id || workspaceUi.resourceId !== id) return; text($("#resource-error"), errorMessage(error)); $("#resource-save").disabled = false; } });
+
+  const appUi = { settings: null, settingsTab: "cloud", team: null, trash: [], trashSelected: new Set(), transferKind: "import", transferBusy: false, settingsRevision: 0 };
+  async function refreshProfiles() { const fresh = await api("snapshot"); applySnapshot(fresh.snapshot || fresh); await loadLibrary(); }
+  function openWorkspaceTrash(ids) {
+    workspaceUi.trashIds = [...new Set(ids)].filter(id => getProfile(id));
+    if (!workspaceUi.trashIds.length) return;
+    $("#workspace-trash-form").reset(); text($("#workspace-trash-title"), `Move ${workspaceUi.trashIds.length} profiles to Trash`);
+    text($("#workspace-trash-copy"), workspaceUi.trashIds.map(id => getProfile(id)?.name || id).join(", "));
+    const open = workspaceUi.trashIds.filter(id => !profileStopped(getProfile(id)));
+    text($("#workspace-trash-error"), open.length ? `${open.length} selected profiles are open. Stop them first; the selection is retained.` : "");
+    updateTrashConfirmation(); $("#workspace-trash-dialog").showModal();
+  }
+  function renderTrash() {
+    const list = $("#trash-list"); list.replaceChildren();
+    for (const profile of appUi.trash) {
+      const id = profile.id || profile.profileId, label = makeElement("label", "settings-list-row"), checkbox = makeElement("input", "");
+      checkbox.type = "checkbox"; checkbox.checked = appUi.trashSelected.has(id); checkbox.setAttribute("aria-label", `Select trashed ${profile.name || id}`);
+      checkbox.addEventListener("change", () => { checkbox.checked ? appUi.trashSelected.add(id) : appUi.trashSelected.delete(id); updateTrashActions(); });
+      const details = makeElement("span", "settings-list-copy"); details.append(makeElement("strong", "", profile.name || id), makeElement("small", "", `${engineLabel(profile)} · ${id}`));
+      label.append(checkbox, details); list.append(label);
+    }
+    $("#trash-empty").hidden = appUi.trash.length !== 0; updateTrashActions();
+  }
+  function updateTrashActions() { const selected = appUi.trash.filter(profile => appUi.trashSelected.has(profile.id || profile.profileId)); $("#trash-restore").disabled = !selected.length || selected.some(profile => profile.canRestore === false); $("#trash-purge").disabled = !selected.length || selected.some(profile => profile.canPurge === false); }
+  async function loadTrash() {
+    text($("#trash-error"), "Reading Trash…");
+    try { const result = await api("app/trash"); appUi.trash = Array.isArray(result.profiles) ? result.profiles : []; const ids = new Set(appUi.trash.map(profile => profile.id || profile.profileId)); appUi.trashSelected = new Set([...appUi.trashSelected].filter(id => ids.has(id))); renderTrash(); text($("#trash-error"), ""); }
+    catch (error) { text($("#trash-error"), errorMessage(error)); }
+  }
+  async function openTrash() { $("#trash-dialog").showModal(); await loadTrash(); }
+  async function appDownload(path, body) {
+    if (!state.token) throw new Error("Connect to the local workspace first.");
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 180000);
+    try {
+      const response = await fetch(`${workspaceBase}/api/app/${path}`, { method: "POST", headers: { "X-StakeMode-Workspace": "1", Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal, credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
+      if (!response.ok) { let failure; try { failure = await response.json(); } catch {} throw new Error(failure?.error || `Export failed (${response.status}).`); }
+      const blob = await response.blob(); if (!blob.size) throw new Error("The exported file was empty.");
+      const filename = /filename="([^"\r\n]+)"/.exec(response.headers.get("Content-Disposition") || "")?.[1] || `gamebrowser-profiles.${body.format}`;
+      const url = URL.createObjectURL(blob), anchor = makeElement("a", ""); anchor.href = url; anchor.download = filename.replace(/[\\/]/g, "_"); anchor.hidden = true; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1500);
+    } finally { clearTimeout(timeout); }
+  }
+  async function importProfileFiles(form) {
+    const files = [...form.elements.files.files]; if (!files.length) throw new Error("Choose at least one profile export file.");
+    const body = new FormData(); for (const file of files) body.append("files", file); if (form.elements.groupId.value) body.append(workspaceBase === "/workspace/cloud" ? "group" : "groupId", form.elements.groupId.value);
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 180000);
+    try {
+      const response = await fetch(`${workspaceBase}/api/app/profiles/import`, { method: "POST", headers: { "X-StakeMode-Workspace": "1", Authorization: `Bearer ${state.token}`, Accept: "application/json" }, body, signal: controller.signal, credentials: "omit", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
+      const result = await response.json(); if (!response.ok || result.ok === false) throw new Error(result.error || `Import failed (${response.status}).`); return result;
+    } finally { clearTimeout(timeout); }
+  }
+  function openAppSettings(tab = "cloud") {
+    appUi.settingsTab = tab; $("#app-settings-dialog").showModal(); selectSettingsTab(tab); loadAppSettings();
+  }
+  function selectSettingsTab(tab) {
+    appUi.settingsTab = ["cloud", "team", "mcp", "data"].includes(tab) ? tab : "cloud";
+    for (const button of $$("[data-settings-tab]")) { const selected = button.dataset.settingsTab === appUi.settingsTab; button.classList.toggle("selected", selected); button.setAttribute("aria-selected", String(selected)); button.tabIndex = selected ? 0 : -1; }
+    for (const panel of $$("[data-settings-panel]")) panel.hidden = panel.dataset.settingsPanel !== appUi.settingsTab;
+    if (appUi.settingsTab === "team") loadTeam(); if (appUi.settingsTab === "data") loadDataSources();
+  }
+  async function loadAppSettings() {
+    const revision = ++appUi.settingsRevision; text($("#app-settings-error"), "");
+    try {
+      const result = await api("app/settings"); if (revision !== appUi.settingsRevision) return; appUi.settings = result;
+      const cloud = result.cloud || {}, config = $("#cloud-config-form"), mcp = result.localMcp || {}, mcpForm = $("#mcp-form");
+      config.elements.baseUrl.value = cloud.baseUrl || ""; config.elements.authUrl.value = cloud.authUrl || ""; config.elements.anonKey.value = cloud.anonKey || "";
+      text($("#cloud-status"), cloud.authenticated ? `Connected${cloud.user?.email ? ` as ${cloud.user.email}` : ""}. Local profiles remain on this device.` : cloud.configured ? "Cloud service configured. Sign in to manage your team." : "Local mode · connect a compatible Cloud service when you need sharing.");
+      $("#cloud-signin-form").hidden = cloud.authenticated === true; $("#cloud-signout").hidden = !cloud.authenticated; $("#cloud-workspace-link").hidden = !cloud.authenticated; $("#cloud-retry-pending").hidden = !cloud.authenticated; $("#local-workspace-link").hidden = workspaceBase !== "/workspace/cloud";
+      $("#cloud-signin-submit").disabled = !cloud.configured; $("#cloud-restore").hidden = !desktopInvoke() || cloud.authenticated === true; $("#cloud-restore").disabled = !cloud.configured;
+      mcpForm.elements.enabled.checked = mcp.enabled === true; mcpForm.elements.enabled.disabled = mcp.available === false; $("#mcp-save").disabled = mcp.available === false; const mcpEndpoint = mcp.path ? new URL(mcp.path, location.origin) : null; if (mcpEndpoint && /agent/i.test(mcp.protocol || "")) mcpEndpoint.protocol = location.protocol === "https:" ? "wss:" : "ws:"; mcpForm.elements.endpoint.value = mcpEndpoint?.href || "";
+      text($("#mcp-status"), mcp.available === false ? "Local MCP is available when GameBrowser runs in its desktop app." : `${mcp.enabled ? "Enabled" : "Disabled"}${mcp.protocol ? ` · ${mcp.protocol}` : ""}. Local tools require authentication.`);
+    } catch (error) { text($("#app-settings-error"), errorMessage(error)); }
+  }
+  function fillTeamShareTargets() {
+    const form = $("#team-share-form"), team = appUi.team || {}, target = form.elements.id; target.replaceChildren();
+    const group = form.elements.scope.value === "group", items = (group ? team.folders || [] : team.profiles || []).filter(item => item.archivedAt == null && item.trashedAt == null);
+    for (const item of items) { const option = makeElement("option", "", item.name || item.label || item.id); option.value = group ? item.name || item.id : item.id || item.profileId; target.append(option); }
+    const role = team.status?.workspace?.role; $("#team-share-submit").disabled = !items.length || !form.elements.accountId.options.length || (role && !["owner", "admin"].includes(role));
+  }
+  async function loadTeam() {
+    text($("#team-status"), "Reading team access…"); text($("#team-invite-error"), "");
+    try {
+      const team = await api("app/team"); appUi.team = team; const list = $("#team-members"), accounts = $("#team-share-form").elements.accountId; list.replaceChildren(); accounts.replaceChildren();
+      for (const member of team.members || []) { const row = makeElement("div", "settings-list-row"), details = makeElement("span", "settings-list-copy"); details.append(makeElement("strong", "", member.email || member.accountId), makeElement("small", "", member.role || "Member")); row.append(details); list.append(row); const option = makeElement("option", "", member.email || member.accountId); option.value = member.accountId || member.id; accounts.append(option); }
+      for (const invite of team.invitations || []) { const row = makeElement("div", "settings-list-row"); row.append(makeElement("span", "", invite.email || "Invitation"), makeElement("small", "muted-copy", invite.status || "Pending invitation")); list.append(row); }
+      const unavailable = team.status === "unconfigured" || team.status === "signed-out" || team.status === "unauthenticated";
+      const members = team.members?.length || 0, invitations = team.invitations?.length || 0; text($("#team-status"), unavailable ? "Sign in to a compatible Cloud service to invite members and share access." : `${members} member${members === 1 ? "" : "s"} · ${invitations} pending invitation${invitations === 1 ? "" : "s"}`);
+      const role = team.status?.workspace?.role, canShare = !role || ["owner", "admin"].includes(role);
+      $("#team-invite-submit").disabled = unavailable || !canShare; fillTeamShareTargets(); if (!canShare) { $("#team-share-submit").disabled = true; text($("#team-status"), "Your workspace administrator can invite members and manage sharing."); }
+    } catch (error) { text($("#team-status"), errorMessage(error)); $("#team-invite-submit").disabled = true; $("#team-share-submit").disabled = true; }
+  }
+  async function loadDataSources() {
+    text($("#data-status"), "Checking for existing StakeMode data…");
+    try {
+      const result = await api("app/migration"), list = $("#data-sources"); list.replaceChildren();
+      if (result.currentRoot) { const row = makeElement("div", "settings-list-row"), copy = makeElement("span", "settings-list-copy"); copy.append(makeElement("strong", "", "Current GameBrowser data"), makeElement("small", "", result.currentRoot)); row.append(copy); list.append(row); }
+      for (const source of result.sources || []) { const row = makeElement("div", "settings-list-row"), copy = makeElement("span", "settings-list-copy"); copy.append(makeElement("strong", "", `${source.label || "StakeMode workspace"} · ${source.profileCount ?? "?"} profiles`), makeElement("small", "", source.path), makeElement("small", "", source.reason || "Available for a copy after both apps are closed.")); row.append(copy); list.append(row); }
+      text($("#data-status"), result.legacyFound ? "An older workspace was found. Import preserves the source and requires a new, empty destination." : "No older StakeMode workspace was detected in the standard folders.");
+    } catch (error) { text($("#data-status"), errorMessage(error)); }
+  }
+  async function saveSettingsForm(form, path, body, failureSelector, after) {
+    const button = $("button[type=submit]", form); button.disabled = true; text($(failureSelector), "");
+    try { await api(`app/${path}`, body); if (after) await after(); }
+    catch (error) { text($(failureSelector), errorMessage(error)); }
+    finally { button.disabled = false; }
+  }
+  async function loadProfileIdentity(id) {
+    const form = $("#profile-identity-form"); form.dataset.profileId = ""; form.reset(); $("#identity-fields").disabled = true; $("#identity-save").disabled = true; text($("#identity-error"), "Reading saved browser identity…");
+    try { const result = await api(`app/profiles/${encodeURIComponent(id)}/identity`); if (state.settingsProfileId !== id) return; const profile = result.profile || {}; form.dataset.profileId = id; form._expectedVersion = profile.expectedVersion; form._identity = { name: profile.name || "", locale: profile.locale || "", timezone: profile.timezone || "", userAgent: profile.userAgent || profile.ua || "" }; form.elements.name.value = profile.name || ""; form.elements.locale.value = profile.locale || ""; form.elements.timezone.value = profile.timezone || ""; form.elements.userAgent.value = profile.userAgent || profile.ua || ""; updateProfileSettingsAvailability(); text($("#identity-error"), ""); }
+    catch (error) { if (state.settingsProfileId === id) text($("#identity-error"), errorMessage(error)); }
+  }
+  $$("[data-settings-tab]").forEach(button => button.addEventListener("click", () => selectSettingsTab(button.dataset.settingsTab)));
+  $(".settings-tabs").addEventListener("keydown", event => { const tabs = $$("[data-settings-tab]"), current = tabs.indexOf(event.target); if (current < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; event.preventDefault(); const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length; selectSettingsTab(tabs[index].dataset.settingsTab); tabs[index].focus(); });
+  $$("[data-open-trash]").forEach(button => button.addEventListener("click", () => { $("#app-settings-dialog").close(); $("#more-dialog").close(); openTrash(); }));
+  $$("[data-settings-transfer]").forEach(button => button.addEventListener("click", () => { $("#app-settings-dialog").close(); openTransfer(button.dataset.settingsTransfer); }));
+  $("#manage-profiles-link").addEventListener("click", event => { event.preventDefault(); setView("profiles"); });
+  $(".brand").addEventListener("click", event => { event.preventDefault(); setView("live"); });
+  $("#cloud-settings-link").addEventListener("click", event => { event.preventDefault(); openAppSettings(); });
+  $("#mobile-app-settings").addEventListener("click", () => { $("#more-dialog").close(); openAppSettings(); });
+  $("#trash-refresh").addEventListener("click", loadTrash);
+  $("#trash-restore").addEventListener("click", async () => { const ids = [...appUi.trashSelected]; $("#trash-restore").disabled = true; text($("#trash-error"), ""); try { const result = await api("app/trash/restore", { ids }), failed = (result.results || []).filter(item => item.status === "failed"); appUi.trashSelected = new Set(failed.map(item => item.id)); await loadTrash(); await refreshProfiles(); if (failed.length) text($("#trash-error"), `${ids.length - failed.length} profiles restored. ${failed.length} profiles remain selected; close affected browsers and try again.`); else toast("Profiles restored from Trash."); } catch (error) { text($("#trash-error"), errorMessage(error)); } finally { updateTrashActions(); } });
+  $("#trash-purge").addEventListener("click", () => { $("#trash-purge-form").reset(); text($("#trash-purge-error"), ""); text($("#trash-purge-copy"), `${appUi.trashSelected.size} selected profiles will be removed permanently.`); $("#trash-purge-dialog").showModal(); });
+  $("#trash-purge-form").addEventListener("submit", async event => { event.preventDefault(); const form = event.currentTarget; if (form.elements.confirmation.value !== "DELETE") return; const ids = [...appUi.trashSelected], button = $("#trash-purge-submit"); button.disabled = true; text($("#trash-purge-error"), ""); try { const result = await api("app/trash/purge", { ids }), failed = (result.results || []).filter(item => item.status === "failed"); appUi.trashSelected = new Set(failed.map(item => item.id)); await loadTrash(); if (failed.length) text($("#trash-purge-error"), `${ids.length - failed.length} profiles removed. ${failed.length} could not be removed; close affected browsers before retrying.`); else { $("#trash-purge-dialog").close(); toast("Selected profiles permanently removed."); } } catch (error) { text($("#trash-purge-error"), errorMessage(error)); } finally { button.disabled = false; } });
+  $("#transfer-form").addEventListener("submit", async event => {
+    event.preventDefault(); if (appUi.transferBusy) return; const form = event.currentTarget; appUi.transferBusy = true; $("#transfer-submit").disabled = true; text($("#transfer-error"), "");
+    try { if (appUi.transferKind === "export") { const ids = [...form.elements.ids.selectedOptions].map(option => option.value); if (!ids.length) throw new Error("Select at least one profile to export."); await appDownload("profiles/export", { ids, format: form.elements.format.value }); toast("Profile export downloaded."); } else { const result = await importProfileFiles(form); const count = Array.isArray(result.profiles) ? result.profiles.length : result.profiles || result.imported || 0; await refreshProfiles(); toast(`${count} profiles imported.`); } $("#transfer-dialog").close(); form.elements.files.value = ""; }
+    catch (error) { text($("#transfer-error"), error?.name === "AbortError" ? "The transfer timed out. Refresh profiles before retrying." : errorMessage(error)); }
+    finally { appUi.transferBusy = false; $("#transfer-submit").disabled = false; }
+  });
+  $("#transfer-dialog").addEventListener("close", () => { $("#transfer-form").elements.files.value = ""; });
+  $("#cloud-config-form").addEventListener("submit", event => { event.preventDefault(); const form = event.currentTarget; saveSettingsForm(form, "cloud/configure", { baseUrl: form.elements.baseUrl.value.trim(), authUrl: form.elements.authUrl.value.trim(), anonKey: form.elements.anonKey.value.trim() }, "#cloud-config-error", async () => { await loadAppSettings(); toast("Cloud service saved."); }); });
+  async function persistNativeCloudCredentials(result, invoke) { if (!invoke) return; try { if (result.queueKey) await invoke("credential_set", { key: "queue_encryption_key", secret: result.queueKey }); if (result.deviceCredential) await invoke("credential_set", { key: "device_credential", secret: result.deviceCredential }); } catch (error) { await api("app/cloud/signout", {}).catch(() => {}); throw error; } }
+  $("#cloud-signin-form").addEventListener("submit", async event => {
+    event.preventDefault(); const form = event.currentTarget, button = $("#cloud-signin-submit"), body = { email: form.elements.email.value.trim(), password: form.elements.password.value }; form.elements.password.value = ""; button.disabled = true; text($("#cloud-signin-error"), "");
+    try { const invoke = desktopInvoke(); if (invoke) { const key = await invoke("credential_get", { key: "queue_encryption_key" }); if (typeof key === "string" && key) body.queueKey = key; } const result = await api("app/cloud/signin", body); await persistNativeCloudCredentials(result, invoke); await loadAppSettings(); toast("Signed in to Cloud."); }
+    catch (error) { text($("#cloud-signin-error"), errorMessage(error)); }
+    finally { button.disabled = false; }
+  });
+  $("#cloud-restore").addEventListener("click", async () => {
+    const invoke = desktopInvoke(); if (!invoke) return; const button = $("#cloud-restore"); button.disabled = true; text($("#cloud-signin-error"), "");
+    try { const [refreshToken, queueKey, deviceCredential] = await Promise.all([invoke("credential_get", { key: "refresh_token" }), invoke("credential_get", { key: "queue_encryption_key" }), invoke("credential_get", { key: "device_credential" })]); if (typeof refreshToken !== "string" || !refreshToken) throw new Error("No saved Cloud sign-in was found. Sign in with your email and password."); const result = await api("app/cloud/restore", { refreshToken, ...(typeof queueKey === "string" && queueKey ? { queueKey } : {}), ...(typeof deviceCredential === "string" && deviceCredential ? { deviceCredential } : {}) }); await persistNativeCloudCredentials(result, invoke); await loadAppSettings(); toast("Cloud sign-in restored."); }
+    catch (error) { text($("#cloud-signin-error"), errorMessage(error)); }
+    finally { button.disabled = false; }
+  });
+  $("#cloud-retry-pending").addEventListener("click", async event => { const button = event.currentTarget; button.disabled = true; text($("#app-settings-error"), ""); try { await api("app/cloud/retry-pending", {}); toast("Pending profile sync retried."); } catch (error) { text($("#app-settings-error"), errorMessage(error)); } finally { button.disabled = false; } });
+  $("#cloud-signout").addEventListener("click", async () => { try { await api("app/cloud/signout", {}); appUi.team = null; await loadAppSettings(); toast("Signed out of Cloud."); } catch (error) { text($("#app-settings-error"), errorMessage(error)); } });
+  $("#team-invite-form").addEventListener("submit", event => { event.preventDefault(); const form = event.currentTarget; saveSettingsForm(form, "team/invite", { email: form.elements.email.value.trim(), role: form.elements.role.value }, "#team-invite-error", async () => { form.elements.email.value = ""; await loadTeam(); toast("Team invitation sent."); }); });
+  $("#team-share-form").elements.scope.addEventListener("change", fillTeamShareTargets);
+  $("#team-share-form").addEventListener("submit", event => { event.preventDefault(); const form = event.currentTarget; saveSettingsForm(form, "team/share", { scope: form.elements.scope.value, id: form.elements.id.value, accountId: form.elements.accountId.value, permission: form.elements.permission.value }, "#team-share-error", () => toast("Access granted.")); });
+  $("#mcp-form").addEventListener("submit", event => { event.preventDefault(); const form = event.currentTarget; saveSettingsForm(form, "local-mcp", { enabled: form.elements.enabled.checked }, "#mcp-error", async () => { await loadAppSettings(); toast("Local MCP settings saved."); }); });
+  $("#data-refresh").addEventListener("click", loadDataSources);
+  $("#app-settings-dialog").addEventListener("close", () => { appUi.settingsRevision++; $("#cloud-signin-form").elements.password.value = ""; });
+  $("#profile-identity-form").addEventListener("submit", event => { event.preventDefault(); const id = state.settingsProfileId, form = event.currentTarget; if (!id || !profileStopped(getProfile(id))) return; const set = {}; for (const field of ["name", "locale", "timezone", "userAgent"]) { const value = form.elements[field].value.trim(); if (value !== (form._identity?.[field] || "")) set[field] = value; } if (!Object.keys(set).length) { toast("No browser identity changes to save."); return; } saveSettingsForm(form, `profiles/${encodeURIComponent(id)}/identity`, { set, ...(form._expectedVersion !== undefined ? { expectedVersion: form._expectedVersion } : {}) }, "#identity-error", async () => { await refreshProfiles(); await loadProfileIdentity(id); toast("Browser identity saved for the next launch."); }); });
 
   $("#main").addEventListener("click", onAction);
   $("#mobile-more").addEventListener("click", () => $("#more-dialog").showModal());
@@ -1102,7 +1258,7 @@
   $$("[data-filter]").forEach(button => button.addEventListener("click", () => { state.filter = button.dataset.filter; $$("[data-filter]").forEach(other => { const active = other === button; other.classList.toggle("selected", active); other.setAttribute("aria-pressed", String(active)); }); render(); }));
   $("#profile-search").addEventListener("input", event => { state.search = event.target.value.trim().toLowerCase(); render(); });
   $("#create-button").addEventListener("click", openCreate); $("#empty-create").addEventListener("click", openCreate);
-  $("#nav-settings").addEventListener("click", () => { location.href = settingsUrl(); }); $("#edit-scope").addEventListener("click", openSettings);
+  $("#nav-settings").addEventListener("click", () => openAppSettings()); $("#edit-scope").addEventListener("click", openSettings);
   $$("[data-close]").forEach(button => button.addEventListener("click", () => $("#" + button.dataset.close).close()));
   $("#dismiss-error").addEventListener("click", () => { $("#error-banner").hidden = true; });
   $("#profile-settings-form").elements.networkMode.addEventListener("change", updateProxyFields);
@@ -1119,7 +1275,9 @@
     try {
       const screen = desktopScreen(form.elements.width.value, form.elements.height.value);
       state.busy.add(id); updateProfileSettingsAvailability(); text($("#screen-save"), "Saving…");
-      await api(profilePath(id, "screen"), screen); toast("Browser viewport saved for the next profile start.");
+      if (workspaceBase === "/workspace/cloud") { const identity = $("#profile-identity-form"); await api(`app/profiles/${encodeURIComponent(id)}/identity`, { set: { resolution: `${screen.width}x${screen.height}` }, ...(identity._expectedVersion !== undefined ? { expectedVersion: identity._expectedVersion } : {}) }); await refreshProfiles(); await loadProfileIdentity(id); }
+      else await api(profilePath(id, "screen"), screen);
+      toast("Browser viewport saved for the next profile start.");
     } catch (error) { text($("#screen-error"), errorMessage(error)); }
     finally { state.busy.delete(id); text($("#screen-save"), "Save screen size"); updateProfileSettingsAvailability(); render(); }
   });
@@ -1183,9 +1341,18 @@
       const networkMode = form.elements.networkMode.value;
       const proxies = networkMode === "proxy" ? form.elements.proxies.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean) : []; if (networkMode === "proxy" && proxies.length !== count && proxies.length !== 1) throw new Error("Supply one shared proxy endpoint or exactly one endpoint per profile.");
       const resolutions = [...form.elements.resolution.selectedOptions].map(option => { const [width, height] = option.value === "custom" ? [form.elements.screenWidth.value, form.elements.screenHeight.value] : option.value.split("x"); return desktopScreen(width, height); }); if (!resolutions.length) throw new Error("Choose at least one viewport preset or Custom viewport size.");
-      const result = await api("bulk", { count, prefix: form.elements.prefix.value.trim(), engine: form.elements.engine.value, origin, networkMode, proxies, ramMb: Number(form.elements.ramMb.value), ...(form.elements.heapMb.value ? { heapMb: Number(form.elements.heapMb.value), explicitHeap: true } : { explicitHeap: false }), resolutions, headless: true });
+      const settings = { ramMb: Number(form.elements.ramMb.value), ...(form.elements.heapMb.value ? { heapMb: Number(form.elements.heapMb.value), explicitHeap: true } : { explicitHeap: false }) };
+      if (workspaceBase === "/workspace/cloud") {
+        const parsedProxies = proxies.map(value => { const url = new URL(value); if (!["http:", "https:", "socks5:"].includes(url.protocol) || url.pathname !== "/" && url.pathname !== "" || url.search || url.hash) throw new Error("Use HTTP or SOCKS5 proxy endpoints without paths."); return { type: url.protocol.slice(0, -1), host: url.hostname, port: url.port || (url.protocol === "https:" ? "443" : url.protocol === "http:" ? "80" : "1080"), user: decodeURIComponent(url.username), pass: decodeURIComponent(url.password) }; });
+        let created = 0;
+        try { for (let index = 0; index < count; index++) { const screen = resolutions[index % resolutions.length]; text(button, `Creating ${index + 1} / ${count}…`); await api("app/cloud/profiles", { name: `${form.elements.prefix.value.trim()} ${index + 1}`, engine: form.elements.engine.value, screen: `${screen.width}x${screen.height}`, origin, networkMode, ...(parsedProxies.length ? { proxy: parsedProxies[index % parsedProxies.length] } : {}), ...settings }); created++; } }
+        catch (error) { await refreshProfiles(); throw new Error(`${created} profiles created before this request failed. ${errorMessage(error)}`); }
+        await refreshProfiles();
+      } else {
+        const result = await api("bulk", { count, prefix: form.elements.prefix.value.trim(), engine: form.elements.engine.value, origin, networkMode, proxies, ...settings, resolutions, headless: true });
+        if (!result.snapshot) { const fresh = await api("snapshot"); applySnapshot(fresh.snapshot || fresh); }
+      }
       form.elements.proxies.value = "";
-      if (!result.snapshot) { const fresh = await api("snapshot"); applySnapshot(fresh.snapshot || fresh); }
       $("#create-dialog").close(); toast(`${count} isolated profile${count === 1 ? "" : "s"} created.`);
     } catch (error) { text(failure, errorMessage(error)); }
     finally { button.disabled = false; text(button, "Create profiles"); }
@@ -1207,6 +1374,7 @@
   else intersectionObserver = { observe(tile) { tile._visible = true; }, unobserve() {} };
 
   const profilesNav = $(".navigation [data-view=profiles]"), tasksNav = $(".navigation [data-view=tasks]"); tasksNav.before(profilesNav);
+  state.initialSettings = location.hash === "#settings";
   setView(location.hash.slice(1));
   $("#live-grid").innerHTML = '<div class="loading-skeleton" aria-label="Loading workspace"></div><div class="loading-skeleton" aria-hidden="true"></div>';
   bootstrap();

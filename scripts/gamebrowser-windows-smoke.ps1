@@ -171,7 +171,8 @@ try {
       if ($candidate.protocol -ceq 'aliasmode-runtime-v1' -and $candidate.appVersion -ceq $ExpectedVersion -and
           $candidate.readiness -ceq 'local' -and $candidate.desktopPid -eq $desktop.Id -and $candidate.port -gt 0) {
         $probe = Invoke-RestMethod "http://127.0.0.1:$($candidate.port)/ui/api/health" -TimeoutSec 3
-        if ($probe.ok -and $probe.version -ceq $ExpectedVersion -and $probe.instance -ceq $candidate.generation -and
+        if ($probe.ok -and $probe.product -ceq 'GameBrowser' -and $probe.standalone -eq $true -and
+            $probe.version -ceq $ExpectedVersion -and $probe.instance -ceq $candidate.generation -and
             (Test-WithinRoot ([string]$probe.root) $stateRoot)) {
           $descriptor = $candidate
           $health = $probe
@@ -319,15 +320,30 @@ try {
       }
       $liveResult = Get-Content -LiteralPath $liveReport -Raw | ConvertFrom-Json
       if (-not $liveResult.success -or -not $liveResult.checks.actualBundledFirefoxLaunch -or
+          -not $liveResult.checks.independentWorkspaceEntrypoint -or
           -not $liveResult.checks.liveManualClickAndTyping -or -not $liveResult.checks.actualFirefoxTabsAndNavigation -or
           -not $liveResult.checks.actualChromiumAdminFirefoxFollower -or -not $liveResult.checks.stopFollowingKeepsBrowsersAlive -or
-          -not $liveResult.checks.mixedFollowingAfterFirefoxReopen) {
-        throw 'Installed Live workspace did not validate its real Firefox controls'
+          -not $liveResult.checks.actualChromiumAdminFirefoxBrowserControls -or -not $liveResult.checks.actualFirefoxAdminChromiumBrowserControls -or
+          -not $liveResult.checks.mixedFollowingAfterFirefoxReopen -or -not $liveResult.checks.actualFirefoxAdminChromiumFollower -or
+          -not $liveResult.checks.nativeSensitiveActionsRemainManual -or
+          -not $liveResult.checks.followerSelectionKeepsConnection -or -not $liveResult.checks.savedFollowingSurvivesWorkspaceReload -or
+          -not $liveResult.checks.actualPrivateCookieIsolation -or -not $liveResult.checks.actualNativeWorkflowBothEngines -or
+          -not $liveResult.checks.actualNativeOneOffSchedule -or -not $liveResult.checks.actualVerifiedResourceMetrics -or
+          -not $liveResult.checks.actualNativeAddonBothEngines -or -not $liveResult.checks.actualNativeAddonPopupAndOptions -or
+          -not $liveResult.checks.addonScopeAndDisabledRestart) {
+        throw 'Installed standalone workspace did not validate its native browser and StakeMode feature gates'
       }
       $checks.installedLiveWorkspace = $true
       $checks.bundledFirefoxLiveFrames = $true
       $checks.realFirefoxManualInputAndTabs = $true
       $checks.actualChromiumAdminFirefoxFollower = $true
+      $checks.actualFirefoxAdminChromiumFollower = $true
+      $checks.mixedNativeBrowserNavigationAndTabs = $true
+      $checks.nativeSensitiveActionsRemainManual = $true
+      $checks.independentWorkspaceEntrypoint = $true
+      $checks.followingSelectionAndSavedState = $true
+      $checks.nativeCookiesWorkflowsSchedulesAndMetrics = $true
+      $checks.nativeAddonPermissionsUiAndRestart = $true
       $checks.followingStopAndFirefoxReopen = $true
       $checks.bundledFirefoxWithoutDownload = $liveResult.checks.bundledFirefoxWithoutDownload -eq $true
     } finally {
@@ -338,22 +354,79 @@ try {
     if (@($downloads.downloads).Count -ne 0) { throw 'Owned smoke browser runtime download did not finish' }
   }
 
+  if ($RequireLiveWorkspace) {
+    $stage = 'save-session-before-native-close'
+    if ($liveResult.session.adminId -cnotmatch '^[a-zA-Z0-9_-]{1,64}$' -or
+        @($liveResult.session.followerIds).Count -ne 1 -or $liveResult.session.followerIds[0] -cnotmatch '^[a-zA-Z0-9_-]{1,64}$') {
+      throw 'Installed workspace did not identify its owned following test profiles'
+    }
+    $bootstrap = Invoke-RestMethod "$base/workspace/api/bootstrap" -Headers @{ 'X-StakeMode-Workspace' = '1' } -TimeoutSec 5
+    $workspaceHeaders = @{ 'X-StakeMode-Workspace' = '1'; Authorization = "Bearer $($bootstrap.token)" }
+    $savedPlan = @{ adminId = $liveResult.session.adminId; followerIds = @($liveResult.session.followerIds); saveSession = $true }
+    $saved = Invoke-RestMethod "$base/workspace/api/sync" -Method Post -Headers $workspaceHeaders -ContentType 'application/json' -Body ($savedPlan | ConvertTo-Json -Compress) -TimeoutSec 10
+    if (-not $saved.saved -or $saved.adminId -cne $savedPlan.adminId) { throw 'Native test following plan was not saved' }
+  }
+
+  function Close-OwnedSmokeDesktop {
+    Run-WithTimeout -Executable $app -Arguments @() -TimeoutMs 15000
+    $windowDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+      $desktop.Refresh()
+      if ($desktop.MainWindowHandle -ne [IntPtr]::Zero) { break }
+      Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $windowDeadline)
+    if ($desktop.MainWindowHandle -eq [IntPtr]::Zero -or -not $desktop.CloseMainWindow()) { throw 'Installed desktop did not reveal a closeable main window' }
+    if (-not $desktop.WaitForExit(30000)) { throw 'Installed desktop did not shut down after its window closed' }
+    $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ([DateTime]::UtcNow -lt $cleanupDeadline -and (Get-Process -Id $descriptor.sidecarPid -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 300 }
+    if (Get-Process -Id $descriptor.sidecarPid -ErrorAction SilentlyContinue) { throw 'Packaged sidecar survived desktop shutdown' }
+    if (Test-Path -LiteralPath $descriptorPath) { throw 'Runtime descriptor survived desktop shutdown' }
+  }
   $stage = 'desktop-window-shutdown'
-  Run-WithTimeout -Executable $app -Arguments @() -TimeoutMs 15000
-  $windowDeadline = [DateTime]::UtcNow.AddSeconds(30)
-  do {
-    $desktop.Refresh()
-    if ($desktop.MainWindowHandle -ne [IntPtr]::Zero) { break }
-    Start-Sleep -Milliseconds 500
-  } while ([DateTime]::UtcNow -lt $windowDeadline)
-  if ($desktop.MainWindowHandle -eq [IntPtr]::Zero -or -not $desktop.CloseMainWindow()) { throw 'Installed desktop did not reveal a closeable main window' }
-  if (-not $desktop.WaitForExit(30000)) { throw 'Installed desktop did not shut down after its window closed' }
-  $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(15)
-  while ([DateTime]::UtcNow -lt $cleanupDeadline -and (Get-Process -Id $descriptor.sidecarPid -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 300 }
-  if (Get-Process -Id $descriptor.sidecarPid -ErrorAction SilentlyContinue) { throw 'Packaged sidecar survived desktop shutdown' }
-  if (Test-Path -LiteralPath $descriptorPath) { throw 'Runtime descriptor survived desktop shutdown' }
+  Close-OwnedSmokeDesktop
   $checks.singleInstanceReveal = $true
   $checks.gracefulShutdown = $true
+
+  if ($RequireLiveWorkspace) {
+    $stage = 'resume-saved-session-after-native-reopen'
+    $priorGeneration = $descriptor.generation
+    $desktop = Start-Process -FilePath $app -ArgumentList @('--background') -WorkingDirectory $runRoot -PassThru
+    $descriptor = $null
+    $reopenDeadline = [DateTime]::UtcNow.AddSeconds(90)
+    while ([DateTime]::UtcNow -lt $reopenDeadline) {
+      $desktop.Refresh()
+      if ($desktop.HasExited) { throw 'Installed desktop exited during native saved-session reopen' }
+      try {
+        $candidate = Get-Content -LiteralPath $descriptorPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($candidate.protocol -ceq 'aliasmode-runtime-v1' -and $candidate.appVersion -ceq $ExpectedVersion -and
+            $candidate.desktopPid -eq $desktop.Id -and $candidate.generation -cne $priorGeneration -and $candidate.port -gt 0) {
+          $probe = Invoke-RestMethod "http://127.0.0.1:$($candidate.port)/ui/api/health" -TimeoutSec 3
+          if ($probe.ok -and $probe.standalone -eq $true -and $probe.instance -ceq $candidate.generation -and
+              (Test-WithinRoot ([string]$probe.root) $stateRoot)) { $descriptor = $candidate; break }
+        }
+      } catch { }
+      Start-Sleep -Milliseconds 300
+    }
+    if (-not $descriptor) { throw 'Installed desktop did not reopen its independent runtime' }
+    $base = "http://127.0.0.1:$($descriptor.port)"
+    $bootstrap = Invoke-RestMethod "$base/workspace/api/bootstrap" -Headers @{ 'X-StakeMode-Workspace' = '1' } -TimeoutSec 5
+    $workspaceHeaders = @{ 'X-StakeMode-Workspace' = '1'; Authorization = "Bearer $($bootstrap.token)" }
+    $restored = Invoke-RestMethod "$base/workspace/api/sync" -Headers $workspaceHeaders -TimeoutSec 5
+    if (-not $restored.saved -or $restored.active -or $restored.adminId -or
+        $restored.savedAdminId -cne $savedPlan.adminId -or @($restored.savedFollowerIds).Count -ne 1 -or
+        $restored.savedFollowerIds[0] -cne $savedPlan.followerIds[0]) { throw 'Native reopen did not retain the saved plan for explicit resume' }
+    $resumed = Invoke-RestMethod "$base/workspace/api/sync" -Method Post -Headers $workspaceHeaders -ContentType 'application/json' -Body '{"action":"resume"}' -TimeoutSec 10
+    if ($resumed.active -or -not $resumed.waiting -or $resumed.adminId -cne $savedPlan.adminId -or
+        @($resumed.followerIds).Count -ne 1 -or $resumed.followerIds[0] -cne $savedPlan.followerIds[0]) { throw 'Explicit resume did not restore the exact saved Admin and follower assignment' }
+    $reopenedProfiles = Invoke-RestMethod "$base/ui/api/profiles" -TimeoutSec 5
+    if (@($reopenedProfiles.profiles | Where-Object { $_.running }).Count -ne 0) { throw 'Saved-session resume unexpectedly started a stopped browser' }
+    $null = Invoke-RestMethod "$base/workspace/api/sync" -Method Delete -Headers $workspaceHeaders -TimeoutSec 10
+    $null = Invoke-RestMethod "$base/workspace/api/sync" -Method Post -Headers $workspaceHeaders -ContentType 'application/json' -Body '{"action":"save","saveSession":false}' -TimeoutSec 10
+    $checks.savedSessionSurvivesNativeCloseAndReopen = $true
+    $checks.explicitResumePreservesSavedAssignments = $true
+    $stage = 'reopened-desktop-window-shutdown'
+    Close-OwnedSmokeDesktop
+  }
 
   $stage = 'silent-uninstall'
   $retainedRoot = Join-Path $stateRoot 'profiles\smoke-retained-profile'

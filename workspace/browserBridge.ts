@@ -6,7 +6,8 @@ import type { LaunchInfo } from "../types.ts";
 import { callFirefoxOwner } from "../firefox-runtime.ts";
 import { resolvePlaywrightRuntime } from "../playwright-runtime.ts";
 import { approvedOrigin, approvedUrl, browserCommand, browsingUrl, jpegDimensions, MAX_BROWSER_TABS, publicPageUrl, sameToken, sessionToken, siteCookies, type BrowserCommand, type ProfileBrowserState, type LiveFrame, type ManualControl, type SyncProfileConfig, type SyncController } from "./protocol.ts";
-import { sensitiveTargetPattern } from "./eventPolicy.ts";
+import type { FollowedBrowserState } from "./browserFollowing.ts";
+import { sensitivePathPattern, sensitiveTargetPattern } from "./eventPolicy.ts";
 import type { BrowserWorkflowStep } from "./workflowEngine.ts";
 import type { RelayTransport } from "./syncRelay.ts";
 import { validateDesktopScreen } from "./displayPolicy.ts";
@@ -15,9 +16,12 @@ import { LaunchViewportUnavailableError, validateLiveViewport } from "../launch-
 interface TrackedTab { id: string; page: Page; title: string; loading: boolean; viewportReady: Promise<void>; quarantined: boolean; }
 class NavigationCancelled extends Error { constructor() { super("Browser navigation cancelled"); this.name = "NavigationCancelled"; } }
 interface PendingNavigation { controller: AbortController; }
-interface Connection { browser: Browser; context: BrowserContext; page?: Page; viewport?: { width: number; height: number }; busy: boolean; stopEpoch: number; navigations: Map<Page, PendingNavigation>; geometryEpoch: number; generation: string; transport?: RelayTransport; geometry?: { page: Page; width: number; height: number; at: number; url: string }; tabs: Map<string, TrackedTab>; tabIds: Map<Page, string>; pendingTabs: number; tabQueue: Promise<void>; trustedExtensionOrigins: Set<string>; stateTimer?: ReturnType<typeof setTimeout>; browserError?: string; firefoxPublish?: (page: Page) => void; }
+interface FollowedTabs { key: string; seen: Set<string>; tabs: Map<string, { page: Page; url: string }>; }
+interface Connection { following?: FollowedTabs; browser: Browser; context: BrowserContext; page?: Page; viewport?: { width: number; height: number }; busy: boolean; stopEpoch: number; navigations: Map<Page, PendingNavigation>; geometryEpoch: number; generation: string; transport?: RelayTransport; geometry?: { page: Page; width: number; height: number; at: number; url: string }; tabs: Map<string, TrackedTab>; tabIds: Map<Page, string>; pendingTabs: number; tabQueue: Promise<void>; trustedExtensionOrigins: Set<string>; stateTimer?: ReturnType<typeof setTimeout>; browserError?: string; firefoxPublish?: (page: Page) => void; }
 interface BridgeOptions {
   controller?: SyncController;
+  /** Chromium builds which omit unpacked MV3 support use the same private page binding. */
+  captureFallback?: { connected(profileId: string): boolean; waitMs?: number };
   getLaunch(profileId: string): LaunchInfo | null;
   /** Certifies the current owned process before any endpoint attachment or reuse. */
   authorizeLaunch?(profileId: string): Promise<boolean>;
@@ -29,10 +33,11 @@ interface BridgeOptions {
   onError(profileId: string, message: string): void;
   onFirefoxConnect?(profileId: string, token: string, transport: RelayTransport): boolean;
   onFirefoxPacket?(profileId: string, transport: RelayTransport, packet: unknown): void;
-  onDisconnect?(profileId: string): void;
+  onDisconnect?(profileId: string, transport?: RelayTransport): void;
   onNavigation?(profileId: string, url: string): void;
   onBrowserState?(state: ProfileBrowserState): void;
   beforeBrowserAction?(profileId: string): void;
+  onOperatorBrowserAction?(profileId: string, command: BrowserCommand, state: ProfileBrowserState): void;
   contentScriptPath?: string;
   connect?: (launch: LaunchInfo) => Promise<Browser>;
 }
@@ -138,7 +143,14 @@ export class BrowserBridge {
     try {
       await Promise.all([...connection.tabs.values()].map(tab => tab.viewportReady));
       if (this.connections.get(profileId) !== connection || this.suspended.has(profileId)) throw new Error("Browser attachment changed while preparing its desktop viewport");
-      if (launch.engine === "firefox" && (this.options.controller ?? this.options.getConfig(profileId)?.controller) !== "worker") await this.installFirefoxBridge(profileId, connection);
+      if ((this.options.controller ?? this.options.getConfig(profileId)?.controller) !== "worker") {
+        if (launch.engine === "firefox") await this.installFirefoxBridge(profileId, connection);
+        else if (this.options.captureFallback && !this.options.captureFallback.connected(profileId)) {
+          await new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(5000, this.options.captureFallback?.waitMs ?? 2000))));
+          this.assertReadAuthority(profileId, connection);
+          if (!this.options.captureFallback.connected(profileId)) await this.installFirefoxBridge(profileId, connection);
+        }
+      }
     } catch {
       await this.detach(profileId); this.options.onDisconnect?.(profileId);
       throw new Error("Browser desktop setup failed; check the saved screen size, then stop and restart this profile");
@@ -152,8 +164,10 @@ export class BrowserBridge {
     const script = readFileSync(this.options.contentScriptPath ?? join(import.meta.dir, "..", "extensions", "stakemode-sync", "content.js"), "utf8");
     const context = connection.context;
     this.page(profileId, connection);
+    let transportActive = true;
     const transport: RelayTransport = {
       send: packet => {
+        if (!transportActive) return;
         for (const page of context.pages()) {
           if (page.isClosed()) continue;
           const isConfig = (packet as { type?: string }).type === "CONFIG";
@@ -166,12 +180,13 @@ export class BrowserBridge {
           }, delivery).catch(() => this.options.onError(profileId, "Firefox page delivery failed"));
         }
       },
-      close: () => { for (const page of context.pages()) void page.evaluate(() => (window as any).__stakemodeDispose?.()).catch(() => {}); },
+      close: () => { transportActive = false; for (const page of context.pages()) void page.evaluate(() => (window as any).__stakemodeDispose?.()).catch(() => {}); },
     };
     connection.transport = transport;
     const captureNonce = sessionToken(), bindingName = `__stakemodeCapture_${sessionToken().replaceAll("-", "_")}`;
     await context.exposeBinding(bindingName, async (source, packet, nonce) => {
-      if (!sameToken(nonce, captureNonce)) return;
+      if (!transportActive || !sameToken(nonce, captureNonce)) return;
+      try { this.assertReadAuthority(profileId, connection, source.page); } catch { return; }
       if (source.frame !== source.page.mainFrame() || source.page.isClosed() || source.page !== connection.page) return;
       const current = this.options.getConfig(profileId);
       if (!current) return;
@@ -189,16 +204,20 @@ export class BrowserBridge {
     })();`;
     await context.addInitScript({ content: source });
     for (const page of context.pages()) await page.evaluate(source).catch(() => {});
-    if (!this.options.onFirefoxConnect(profileId, config.token, transport)) throw new Error("Firefox synchronization authentication failed");
+    // A late MV3 connection wins without activating a second action source.
+    if (this.options.getLaunch(profileId)?.engine !== "firefox" && this.options.captureFallback?.connected(profileId)) {
+      connection.transport = undefined; transport.close(); return;
+    }
+    if (!this.options.onFirefoxConnect(profileId, config.token, transport)) throw new Error("Browser synchronization authentication failed");
     const publishPage = (page: Page) => {
-      if (page.isClosed()) return;
+      if (!transportActive || page.isClosed()) return;
       const current = this.options.getConfig(profileId);
       if (!current) return;
       try { approvedUrl(page.url(), current.origins); }
       catch { this.options.onNavigation?.(profileId, page.url()); return; }
       this.invalidateGeometry(connection);
       connection.page = page;
-      transport.send({ type: "CONFIG", profileId, role: current.role, origins: current.origins, epoch: current.epoch });
+      transport.send({ type: "CONFIG", profileId, role: current.role, origins: current.origins, epoch: current.epoch, paused: current.paused === true, ...(current.preserveAssignments ? { preserveAssignments: true } : {}) });
       this.options.onFirefoxPacket!(profileId, transport, { type: "PAGE", origin: new URL(page.url()).origin, url: page.url() });
     };
     connection.firefoxPublish = publishPage;
@@ -410,7 +429,94 @@ export class BrowserBridge {
       this.options.onNavigation?.(profileId, connection.page?.url() ?? "about:blank");
       this.publishBrowserState(profileId, connection);
     }
-    return this.browserState(profileId);
+    const result = await this.browserState(profileId);
+    this.options.onOperatorBrowserAction?.(profileId, command, this.state(profileId, connection, false));
+    return result;
+  }
+  /** Internal authenticated following path. It has no HTTP endpoint and cannot
+   * grant manual control; every await rechecks the exact launch and session. */
+  async applyFollowedBrowserState(profileId: string, key: string, event: FollowedBrowserState, current: () => boolean): Promise<void> {
+    if (!current()) return;
+    const connection = await this.connection(profileId);
+    const assert = (page?: Page) => {
+      this.assertReadAuthority(profileId, connection, page);
+      const config = this.options.getConfig(profileId);
+      if (!current() || config?.role !== "follower" || config.paused) throw new NavigationCancelled();
+    };
+    const safeUrl = (value: string) => {
+      if (value === "about:blank") return value;
+      const config = this.options.getConfig(profileId);
+      const url = new URL(approvedUrl(value, config?.origins ?? []));
+      if (url.search || url.hash || sensitivePathPattern.test(url.pathname)) throw new Error("Navigation requires independent manual control");
+      return url.href;
+    };
+    assert(); this.trackExistingPages(profileId, connection);
+    const source = event.state;
+    if (source.tabs.length > MAX_BROWSER_TABS) throw new Error("Too many followed tabs");
+    for (const tab of source.tabs) safeUrl(tab.url);
+    if (!connection.following || connection.following.key !== key || event.baseline) {
+      const available = [...connection.tabs.values()].filter(tab => !tab.page.isClosed()).map(tab => tab.page);
+      const active = connection.page, sourceActive = source.activeTabId;
+      const tabs = new Map<string, { page: Page; url: string }>();
+      if (active && sourceActive) {
+        const tab = source.tabs.find(item => item.id === sourceActive);
+        if (tab) tabs.set(sourceActive, { page: active, url: tab.url });
+      }
+      const unused = available.filter(page => page !== active);
+      for (const tab of source.tabs) {
+        if (tabs.has(tab.id)) continue;
+        const page = unused.shift(); if (page) tabs.set(tab.id, { page, url: tab.url });
+      }
+      connection.following = { key, seen: new Set(source.tabs.map(tab => tab.id)), tabs };
+      return; // Starting/resuming never replays an Admin's earlier navigation.
+    }
+    const following = connection.following, sourceIds = new Set(source.tabs.map(tab => tab.id));
+    for (const [id, target] of [...following.tabs]) if (!sourceIds.has(id)) {
+      assert(target.page);
+      // Preserve a usable window when its final mirrored tab is closed.
+      if (connection.context.pages().filter(page => !page.isClosed()).length === 1) {
+        const replacement = await bounded(connection.context.newPage(), 10000); assert();
+        const tracked = this.trackPage(profileId, connection, replacement); await tracked.viewportReady; assert(replacement);
+        this.selectPage(profileId, connection, replacement);
+      }
+      await bounded(target.page.close({ runBeforeUnload: false }), 5000); assert();
+      following.tabs.delete(id); following.seen.delete(id);
+    }
+    for (const tab of source.tabs) {
+      assert();
+      const destination = safeUrl(tab.url);
+      let target = following.tabs.get(tab.id);
+      if (target?.page.isClosed()) { following.tabs.delete(tab.id); target = undefined; }
+      const newlyOpened = !following.seen.has(tab.id);
+      if (!target && (newlyOpened || source.activeTabId === tab.id)) {
+        // A replayed link can already have opened its own corresponding page.
+        const claimed = new Set([...following.tabs.values()].map(item => item.page));
+        let page = connection.context.pages().find(page => !page.isClosed() && !claimed.has(page) && (publicPageUrl(page.url()) === destination || event.skipNavigation && newlyOpened));
+        if (!page) {
+          if (connection.tabs.size >= MAX_BROWSER_TABS) throw new Error("Close a follower tab before opening another");
+          page = await bounded(connection.context.newPage(), 10000); assert();
+          const tracked = this.trackPage(profileId, connection, page); await tracked.viewportReady; assert(page);
+        }
+        target = { page, url: "about:blank" }; following.tabs.set(tab.id, target);
+      }
+      following.seen.add(tab.id);
+      if (!target) continue;
+      assert(target.page);
+      const shouldNavigate = newlyOpened || !event.skipNavigation && target.url !== destination;
+      if (shouldNavigate && publicPageUrl(target.page.url()) !== destination) {
+        await bounded(target.page.goto(destination, { waitUntil: "commit", timeout: 10000 }), 11000); assert(target.page);
+      }
+      if (event.reloadTabId === tab.id && destination !== "about:blank") {
+        await bounded(target.page.reload({ waitUntil: "commit", timeout: 10000 }), 11000); assert(target.page);
+      }
+      if (event.stopTabId === tab.id) { await bounded(target.page.evaluate(() => window.stop()), 3000); assert(target.page); }
+      target.url = destination;
+      if (source.activeTabId === tab.id && connection.page !== target.page) {
+        this.selectPage(profileId, connection, target.page);
+        await bounded(target.page.bringToFront(), 3000); assert(target.page);
+      }
+    }
+    this.invalidateGeometry(connection); this.publishBrowserState(profileId, connection);
   }
   private async newPage(profileId: string, connection: Connection): Promise<Page> {
     if (connection.pendingTabs >= MAX_BROWSER_TABS) throw new Error("Close a tab before opening another; each profile supports 24 tabs");
@@ -687,6 +793,7 @@ export class BrowserBridge {
     this.connections.delete(profileId);
     if (connection.stateTimer) clearTimeout(connection.stateTimer);
     try { connection.transport?.close(); } catch { /* A native stop may already have closed its page. */ }
+    if (connection.transport) this.options.onDisconnect?.(profileId, connection.transport);
     await disconnectBrowser(connection.browser);
   }
   async stop(): Promise<void> {

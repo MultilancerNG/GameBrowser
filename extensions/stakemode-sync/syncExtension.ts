@@ -12,6 +12,7 @@ export type SyncExtensionConfig = {
   origins: string[];
   relayUrl: string;
   controller?: SyncController;
+  preserveAssignments?: boolean;
 };
 /** Creates a private per-profile copy. Never edits distributable extension files.
  * Packaged callers may pass sourceDirectory or STAKEMODE_SYNC_EXTENSION_ROOT. */
@@ -44,7 +45,7 @@ export async function generateSyncExtension(options: {
   manifest.content_scripts = config.controller !== 'worker' && matches.length ? manifest.content_scripts.map((entry: Record<string, unknown>) => ({ ...entry, matches })) : [];
   await writeFile(resolve(directory, 'manifest.json'), JSON.stringify(manifest), { encoding: 'utf8', mode: 0o600 });
   for (const name of ['background.js', 'content.js', 'popup.html', 'popup.js', 'popup.css']) await copyFile(resolve(source, name), resolve(directory, name));
-  const serialized = JSON.stringify({ profileId, token: config.token, role: config.role, origins: [...new Set(config.origins)], relayUrl: config.relayUrl, ...(config.controller ? { controller: config.controller } : {}) });
+  const serialized = JSON.stringify({ profileId, token: config.token, role: config.role, origins: [...new Set(config.origins)], relayUrl: config.relayUrl, ...(config.controller ? { controller: config.controller } : {}), ...(config.preserveAssignments ? { preserveAssignments: true } : {}) });
   const temporary = resolve(directory, `config-${crypto.randomUUID()}.tmp`);
   await writeFile(temporary, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   await rename(temporary, resolve(directory, 'config.json'));

@@ -662,10 +662,9 @@ pub fn run() {
             let allowed_port = port;
             let shell_handle = handle.clone();
             let navigation_shell_handle = handle.clone();
-            let url = format!("{origin}/")
+            let url = format!("{origin}/workspace/dashboard.html")
                 .parse()
                 .map_err(|error| boxed(format!("invalid sidecar URL: {error}")))?;
-            let readiness_data_dir = data_dir.clone();
             let webview_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("GameBrowser")
                 .visible(!background)
@@ -691,9 +690,10 @@ pub fn run() {
                         .app_handle()
                         .state::<runtime_descriptor::RuntimeDescriptorState>();
                     runtime.activate();
-                    if configured_local_mode(&readiness_data_dir)
-                        && runtime.publish("local").is_err()
-                    {
+                    // The independent application always starts its own account-free
+                    // local workspace. Optional Cloud has a separate authenticated
+                    // route and cannot prevent native Local/MCP readiness.
+                    if runtime.publish("local").is_err() {
                         window.app_handle().exit(1);
                     }
                 });

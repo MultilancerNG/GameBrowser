@@ -426,3 +426,26 @@ test("revocation between cookie domains prevents remaining clears and export ret
     await reading.promise; setAllowed(false); exportGate.resolve(); expect(await exported).toBeInstanceOf(Error);
   } finally { await bridge.stop(); }
 });
+
+for (const engine of ["chromium", "firefox"] as const) test(`${engine} authenticated following mirrors approved navigation and tab lifetimes without manual takeover`, async () => {
+  const { bridge, pages, events, setRole, setAllowed } = tabsFixture(engine);
+  const source = (tabs: Array<{ id: string; url: string }>, activeTabId = tabs[0]!.id): ProfileBrowserState => ({ profileId: "admin", activeTabId, tabs: tabs.map(tab => ({ ...tab, title: "Fixture", loading: false })), loading: false, canGoBack: null, canGoForward: null, redacted: true });
+  const first = "tab_admin000000000001", second = "tab_admin000000000002";
+  let current = true;
+  try {
+    await bridge.attach("p"); setRole("follower"); setAllowed(false); events.length = 0;
+    await bridge.applyFollowedBrowserState("p", "session-1", { state: source([{ id: first, url: "https://approved.test/source-start" }]), baseline: true, skipNavigation: false }, () => current);
+    expect(events).not.toContain("navigate:https://approved.test/source-start");
+    await bridge.applyFollowedBrowserState("p", "session-1", { state: source([{ id: first, url: "https://approved.test/second" }]), baseline: false, skipNavigation: false }, () => current);
+    expect(pages[0]!.url()).toBe("https://approved.test/second");
+    await bridge.applyFollowedBrowserState("p", "session-1", { state: source([{ id: first, url: "https://approved.test/second" }, { id: second, url: "https://approved.test/new-tab" }], second), baseline: false, skipNavigation: false }, () => current);
+    expect(pages.filter(page => !page.closed)).toHaveLength(2);
+    expect(pages[1]!.url()).toBe("https://approved.test/new-tab");
+    await bridge.applyFollowedBrowserState("p", "session-1", { state: source([{ id: first, url: "https://approved.test/second" }]), baseline: false, skipNavigation: false, reloadTabId: first }, () => current);
+    expect(pages[1]!.closed).toBe(true); expect(events).toContain("reload");
+    expect(events).not.toContain("manual");
+    current = false;
+    await bridge.applyFollowedBrowserState("p", "session-1", { state: source([{ id: first, url: "https://approved.test/stale" }]), baseline: false, skipNavigation: false }, () => current);
+    expect(pages[0]!.url()).toBe("https://approved.test/second");
+  } finally { await bridge.stop(); }
+});

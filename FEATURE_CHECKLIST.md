@@ -1,109 +1,106 @@
-# GameBrowser — complete requested feature checklist
+# GameBrowser — requested features and independent StakeMode upgrade
 
-Checked items have been verified in the named build or surface. **Windows beta 82 is the current published installer.** It includes the restored Live workspace and improved UI, verified through rendered-browser checks and the installed Windows release gate.
+**Published download: Windows beta 82. Independent upgrade: source work in progress; new Windows installer verification and publication are pending.** Beta 82 passed its installed checks, but its mounted workspace is the architecture being replaced. Downloading beta 82 does not install the standalone changes below.
 
-## Branding, Windows and delivery
+For the independent-upgrade sections, `[x]` means the feature is implemented in source. `[ ]` means work or verification remains. Source implementation and old release evidence are not proof that the new installer has shipped. See [the independent upgrade guide](docs/INDEPENDENT-STAKEMODE-UPGRADE.md) for provenance, architecture and required release evidence.
 
-- [x] GameBrowser product name, Windows executable and installer branding.
-- [x] Developed by Solomon Gbeta, with solomon.ng attribution and preserved upstream licenses.
-- [x] Source uploaded to MultilancerNG/GameBrowser on GitHub.
-- [x] Windows x64 full/offline and slim installers, with SHA-256 checksums.
-- [x] Beta 82 passed fresh installed-app startup, Local mode, Local MCP, agent discovery, Live workspace/browser controls, shutdown and uninstall checks.
-- [x] Cyber-style download landing page and direct installer download.
-- [x] Removed landing-page GitHub/source navigation links.
-- [x] Updated the download page with the included Live workspace functions, setup steps, FAQs, full/slim installer links and compatible Cloud service requirements.
-- [x] GitHub Pages deployment of the download page.
-- [ ] Publish the prepared site through Sites.
-- [ ] Assign and verify gamebrowser.fiam.dev through Sites and Cloudflare, including HTTPS.
+## Independent project and UI — source
 
-## Profiles and separate identities — available in beta 82
+- [x] Keep the GameBrowser product name, Solomon Gbeta attribution and upstream licenses.
+- [x] Upgrade the original StakeMode standalone architecture with its own `GameBrowser-cli.ts`, runtime, profile store, workspace and settings.
+- [x] Desktop entry opens the own Live workspace; the normal sidecar entry does not run the legacy AliasMode CLI, React dashboard or mounted-host adapter.
+- [x] Keep the approved dark UI, sidebar, compact metrics, live grid and Full Admin View.
+- [x] Retain desktop/mobile layouts, full browser view, fullscreen and return-to-grid controls.
+- [x] Provide own profile management and Settings instead of redirects into the legacy host.
+- [ ] Finish rendered desktop/mobile verification of every new management and Settings flow.
+- [ ] Capture and publish new installed-software screenshots after the standalone Windows gate passes.
 
-- [x] Local mode without an account or AliasMode Cloud connection; profile data stays on the computer.
-- [x] Separate profile browser directories, cookies, storage and saved identity settings.
-- [x] New-profile fingerprint seed collision checks, including profiles in Trash.
-- [x] Preserve supplied identities and sessions when importing full profile exports.
-- [x] Bulk selection and recoverable multi-profile deletion, Trash restoration and permission-aware purge.
-- [x] Desktop and mobile-sized viewport presets, editable on existing profiles; custom dimensions.
-- [x] Per-device saved order, drag/drop and keyboard rearrangement in the profile list.
-- [x] Most recently selected profile appears first in the profile list.
-- [x] Import readable TXT, CSV, JSON and XLSX exports or supported pasted account data.
+## Admin, followers and sessions — source
+
+- [x] Select an explicit Admin; show violet Admin and teal Follower borders independently of selection.
+- [x] Restore Firefox Admin as well as Chromium Admin, with mixed-engine followers.
+- [x] Keep one authenticated capture/replay controller for each following session.
+- [x] Preserve the original 256-profile workspace: one Admin and up to 255 distinct followers, with bounded visible streams and launch concurrency.
+- [x] Mirror supported safe clicks, typing, keyboard, select/checkbox changes and scrolling while retaining separate browser identities and sessions.
+- [x] Follow approved explicit address navigation, reload, new tab, tab selection and tab close in either engine direction.
+- [x] Starting, resuming or reconnecting seeds the existing page state without replaying past navigation or past actions.
+- [x] Clicking or deselecting a follower edits the draft selection without disconnecting it or changing assigned roles.
+- [x] Apply selection, Manual, Pause, Reconnect and Stop remain explicit controls.
+- [x] Retain assigned roles through browser disconnect/reopen; automatic transport recovery forwards future actions only.
+- [x] Keep the existing independent manual boundary for sensitive authentication and financial controls.
+- [x] Save, forget and explicitly resume the exact following group after closing/reopening the application.
+- [x] Stop following keeps the exact browser processes open.
+- [x] Optional Auto-follow Admin selection; it starts off and Stop disables it.
+- [x] Drag/drop and keyboard rearrangement with per-device saved order.
+- [x] Move the most recently selected profile first, as clarified by the user; selection does not silently replace Admin.
+- [ ] Pass the expanded installed mixed-engine, Firefox Admin, navigation/tab, saved-session and reconnect checks on the new build.
+
+## Profiles, imports, exports and existing data — source
+
+- [x] Local mode without an account; separate browser data directories, cookies, storage and identities.
+- [x] Create/edit isolated profiles, bulk create, groups, tags, notes and saved bookmarks.
+- [x] Check fingerprint seed collisions, including profiles in Trash.
+- [x] Import TXT, CSV, JSON and XLSX full-profile exports or supported pasted account data.
 - [x] Export one profile, selected profiles or the current filtered view.
-- [x] TXT/XLSX preserve supported identity, cookies and session data; CSV exports supported account credentials.
-- [x] Cloud export requires edit access to every exported profile.
+- [x] Preserve supported identity/session fields in full exports; supported CSV account fields and richer TXT/XLSX exports remain distinct formats.
+- [x] Keep configuration-only templates and fresh-identity profile copies separate from full identity/session imports.
+- [x] Recoverable bulk Trash, restore and permission-aware permanent purge.
+- [x] Preserve the existing GameBrowser application/state directory and detect beta 82 scoped workspace metadata.
+- [x] Restore original TypeScript/Python `StakeModeClient` SDKs and additive `GameBrowserClient` aliases, with both API guides included in the package.
+- [x] Keep the original authenticated local REST contract and port 8080 default; a busy port fails visibly rather than adopting another service.
+- [x] Detect original StakeMode data and offer an explicit, validated offline state-copy/import workflow; preserve source files and reject unsafe or conflicting destinations.
+- [ ] Verify a representative original StakeMode installation upgrade with the newly built Windows installer.
 
-## Admin, followers and sessions — available in beta 82 profile list
+## Browser functions and resources — source
 
-- [x] Explicit Admin profile selector, with violet Admin and teal Follower role styling.
-- [x] Chromium Admin controls Chromium or Firefox followers using one mirroring worker.
-- [x] Mirror supported clicks, typing, keyboard, select/checkbox changes, scrolling and navigation while retaining separate sessions.
-- [x] Optional Auto-follow Admin selection; other selected profiles become followers automatically.
-- [x] Automatic following starts off; Stop disables the automatic option.
-- [x] Clicking/deselecting a follower leaves assignments intact by default; explicit Apply/Stop changes the group.
-- [x] Save, forget and explicitly resume a following group after an app restart.
-- [x] Retain assignments when browser profiles close and reconnect after they reopen.
-- [x] Reconnection sends future actions only, without replaying old clicks or submissions.
-- [x] Stop following detaches mirroring without closing the browser profiles.
-- [x] Account/access changes require current authorization before control resumes.
-
-## Browser settings — available in beta 82 profile editor
-
-- [x] RAM budget, MB: Auto or manual target from 128 to 32768 MB.
-- [x] Auto target uses available memory and counts running/reserved/concurrent profile starts.
+- [x] Real Chromium/Firefox browser frames, running status and per-profile controls.
+- [x] Independent address bar, back/forward, reload/stop, tabs and manual input.
+- [x] Desktop/mobile-sized presets and custom dimensions editable while stopped.
+- [x] Preserve the launch-generation viewport and current Firefox content-size correction; viewer resizing does not resize the browser.
+- [x] RAM budget, MB: Auto or a manual target from 128 to 32768 MB.
+- [x] Automatic allocation uses available memory and running/reserved/concurrent profile starts.
 - [x] Optional Auto optimize applies supported renderer heap/cache settings at the next fresh launch.
-- [x] Settings are device-local; saving does not close running browsers or change following assignments.
-- [x] Per-profile bookmarks-bar preference, including Always show and preservation of existing behavior.
-- [x] Existing bookmark folders and unrelated browser preferences are preserved.
+- [x] Resource settings remain device-local and do not close running browsers or change following assignments when saved.
+- [x] Per-profile bookmarks bar, including Always show, while preserving existing folders/preferences.
+- [x] Task manager with verified native CPU/RAM/process readings and ownership-checked Stop/Force close.
+- [x] Direct/System/Proxy modes, saved HTTP/SOCKS proxy library and credential-redacted listings.
+- [x] Local Chromium MV3 extensions and Firefox XPI add-ons, immutable imports, digest/permission review and selected website scope.
+- [x] Real package popup/options views and stopped-profile disable/remove settings effective at next launch.
+- [x] Bounded local read-only workflows, cancellation, JSON/CSV outputs and app-open schedules.
+- [ ] Pass installed native controls, cookies, both-engine workflows, scheduling, metrics and add-on scope/UI/restart gates for the independent build.
 
-These RAM values are soft targets, not a cap on total browser-process memory or a physical RAM reservation. Chromium's heap limit can be visible to websites. Mobile-sized presets change dimensions; they do not emulate a mobile OS or touch hardware.
+RAM budgets are monitored targets rather than total-process memory caps or reserved physical RAM. Mobile-sized presets change dimensions without emulating another OS or touch hardware. Extension site access follows browser host-pattern rules, which do not isolate exact TCP ports.
 
-## Live workspace — shipped in Windows beta 82
+## Optional Cloud, Team, MCP and agents — source and pending service checks
 
-- [x] Make Live workspace prominent in GameBrowser and open it after the Local/Cloud setup flow.
-- [x] Restore live browser tiles with real frames, running state and per-profile controls.
-- [x] Restore Full Admin View and return-to-grid navigation.
-- [x] Restore independent address bar, back/forward, reload/stop, tabs and fullscreen controls.
-- [x] Restore explicit Admin/Follower/Manual controls and user-requested pause/manual takeover.
-- [x] Use the existing trusted mirroring controller to avoid duplicate follower actions.
-- [x] Keep follower assignments through tile selection, browser disconnects and navigation.
-- [x] Expose optional automatic Admin following, save/resume and Stop in the Live workspace.
-- [x] Drag/drop saved tile order, selected-first focus and distinct Admin/Follower borders.
-- [x] Expose full profile import/export clearly, separately from configuration-only templates.
-- [x] Restore groups, tags, notes, bookmarks and configuration copies into fresh identities.
-- [x] Restore task manager, live CPU/RAM measurements and ownership-checked Stop/Force close.
-- [x] Expose automatic RAM/optimization/bookmarks settings in the workspace profile settings.
-- [x] Make desktop/mobile presets and custom sizes editable in the restored workspace.
-- [x] Restore Direct/System/Proxy routes and saved proxy management.
-- [x] Restore local Chromium extensions and Firefox XPI add-ons, with assignment and browser UI support.
-- [x] Restore bounded local workflows, outputs and schedules while the app remains open.
-- [x] Preserve current Cloud authorization, sharing and MCP functionality alongside the workspace.
-- [x] Improved, consistent GameBrowser UI with legible controls, clear navigation and responsive layouts.
-- [x] Verify real browser frames, tabs, roles and follower actions through the rendered workspace.
-- [x] Installed Windows beta 82 Live checks: Firefox frames/input/tabs, exact Admin/Follower colors, mixed Chromium Admin / Firefox Follower actions, Stop keeping both browsers alive and follower reopening.
-- [x] Pass normal desktop shutdown, sidecar cleanup and uninstall, then publish the validated installer.
+- [x] Own optional Cloud settings and verified-account sign-in client, with local profiles available without Cloud.
+- [x] Cloud profile/browser lifecycle integration uses current authoritative grants and account-scoped state.
+- [x] Group/folder and individual profile view/edit sharing controls.
+- [x] Invite members in Settings → Team, including group/profile sharing shortcuts.
+- [x] Preserve encrypted portable profile synchronization and device-access client controls.
+- [x] Retain local MCP tools, private authenticated runtime transport and installed agent discovery.
+- [x] Retain remote MCP connector/agent client code.
+- [x] Mocked Cloud invitation/sharing checks; QA sends no live invitations or emails.
+- [ ] Verify Cloud account/profile/device flows in the independently installed native app.
+- [ ] Verify live Cloud sign-in, invitation delivery, group/profile grants, synchronization and device revocation against an accessible compatible service.
+- [ ] Verify remote MCP and agent clients against that service.
+- [ ] Pass installed Local MCP and agent discovery again for the new standalone release.
 
-## Cloud, sharing, MCP and agents
+Cloud requires a compatible hosted service; shipping the desktop client does not deploy that backend. Current authorization must be refreshed before Cloud browser control; cached identities do not grant access.
 
-- [x] Restored optional compatible Cloud client: verified-account sign-in and shared workspaces.
-- [x] Portable encrypted profile synchronization and device access/revocation client controls.
-- [x] Group/folder and profile view/edit grants with admin-only access changes.
-- [x] Invite members shortcuts from group/profile access to Settings → Team.
-- [x] Invite/share flows tested against mocked Cloud responses; no live invitations sent by QA.
-- [x] Local MCP tools and installed agent-client discovery verified on Windows.
-- [x] Remote MCP connector and agent-client integration code retained.
-- [ ] Verify live Cloud sign-in, invitation delivery, sharing, sync and device revocation against an accessible compatible service.
-- [ ] Verify remote MCP and agent clients against that live service.
-Cloud creation, identity editing and sharing use the existing Profiles/Settings management surfaces. Live workspace lists controllable edit-granted Cloud profiles and uses the Cloud coordinator for their browser lifecycle; view-only profiles remain available in Profiles.
+## Delivery already published and next release
 
-## Validation and remaining external setup
-
-- [x] Real Chromium following checks, including independent cookies and no replay after reconnect.
-- [x] Actual TXT/XLSX export→import checks preserve identity, credentials, cookies, localStorage and tabs.
-- [x] Beta 82 source regression: 2,393 passed, 11 skipped; real WebSocket shutdown tests preserve active HTTP/lifecycle work, owned agent cleanup and browser capture ordering.
-- [x] Rendered desktop/mobile UI, actual source navigation, recoverable Trash and profile controls verified.
-- [x] Independent Local protocol acceptance: 11 real-browser checks, including exact-once following and saved session restore.
-- [x] Independent Cloud boundary acceptance: 7 checks with real browsers and a simulated service, including transient network recovery, revocation and account isolation.
-- [x] Visual concept comparison completed for Live grid and Full Admin View, with functional deviations documented.
-- [x] Publish the validated Windows beta 82 installer and update the download page with its included UI and functions.
+- [x] Publish Windows beta 82 full/offline and slim installers, with SHA-256 checksums.
+- [x] Beta 82 installed gate passed Local startup, local MCP, real Firefox controls, Chromium Admin → Firefox follower, Stop retaining browsers, Firefox reopen, shutdown and uninstall.
+- [x] Publish the cyber-style download page through GitHub Pages with beta 82 features, setup steps, FAQs and installer links.
+- [x] Remove landing-page GitHub/source navigation links.
+- [x] Prepare the new independent sidecar and SDK/API resources; retain verified Firefox 156, official Node 22 and existing viewport/shutdown fixes.
+- [x] Expand Windows release gates to exercise the independent entry, both native Admin directions, following navigation/tabs, exact-once input, saved session close/reopen, sensitive manual boundary, cookies, workflows, schedules, metrics and add-ons.
+- [ ] Complete final source type checks/regression checks at the immutable release commit.
+- [ ] Build and install the new independent full/slim Windows packages; pass every required native gate.
+- [ ] Publish the validated new installer and its checksums, then update the download page and UI images to that version.
+- [ ] Publish through Sites.
+- [ ] Connect and verify `gamebrowser.fiam.dev` through Sites and Cloudflare, including HTTPS.
 - [ ] Configure a GameBrowser signing key before publishing signed in-app update manifests.
 
-The hosted Cloud backend is separate from the public desktop source. Sites/Cloudflare tools are unavailable in this session, and the custom domain is unverified. A network-access draft was saved but has not been applied; it requires review/save and Publish in Environment settings. No credentials were added to chat or source.
+Sites/Cloudflare tools are unavailable in the current session, so the custom domain remains unverified. The new Windows gate is required before promotion; a source build or historical beta 82 result does not satisfy it.

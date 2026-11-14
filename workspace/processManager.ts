@@ -64,6 +64,7 @@ export interface ProcessManagerOptions {
   /** Injectable exact resource sampler for deterministic integration tests. */
   monitorFactory?: (options: ConstructorParameters<typeof ResourceMonitor>[0]) => Pick<ResourceMonitor, "start" | "dispose">;
 }
+export type WorkspaceDevicePolicy = Partial<Pick<WorkspacePolicy, "ramMb" | "heapMb" | "explicitHeap" | "urls" | "networkMode" | "budgetAction">>;
 export class ProcessManager {
   private readonly policy: WorkspacePolicyStore;
   private readonly monitor: Pick<ResourceMonitor, "start" | "dispose">;
@@ -179,6 +180,28 @@ export class ProcessManager {
     // Do not let the generic policy endpoint bypass network validation.
     const allowed = Object.fromEntries(Object.entries(value).filter(([key]) => ["ramMb", "heapMb", "urls", "budgetAction"].includes(key)));
     this.policy.set(id, { ...allowed, ...(Object.hasOwn(allowed, "heapMb") ? { explicitHeap: true } : {}) }); this.notify(); return this.getProfile(id)!;
+  }
+  /** Device policy is separate from Cloud identity and never writes the private profile cache. */
+  setDevicePolicy(id: string, value: WorkspaceDevicePolicy): WorkspaceProfileView {
+    this.assertOpen(); assertSafeProfileId(id);
+    if (!this.getProfile(id)) throw new Error("profile was not found in the current workspace");
+    if (this.startsClosed || this.getLaunch(id) || this.starts.has(id) || this.stops.has(id) || this.deleting.has(id)
+      || this.options.launcher.profileDeletionBlocked?.(id)) throw new Error("stop the profile and finish its lifecycle operation before changing device policy");
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.keys(value).some(key => !["ramMb", "heapMb", "explicitHeap", "urls", "networkMode", "budgetAction"].includes(key))) {
+      throw new Error("device policy contains an unsupported field");
+    }
+    const next = normalizeWorkspacePolicy({ ...value,
+      ...(Object.hasOwn(value, "heapMb") && !Object.hasOwn(value, "explicitHeap") ? { explicitHeap: true } : {}),
+    }, this.policy.get(id));
+    if (Object.hasOwn(value, "networkMode")) {
+      const profile = this.options.store.getProfile(id);
+      if (next.networkMode === "proxy" && !profile) throw new Error("Open this Cloud profile once before choosing its saved proxy route");
+      if (profile && next.networkMode) effectiveProfileProxy(profile, next.networkMode);
+    }
+    this.policy.set(id, next);
+    this.notify();
+    return this.getProfile(id)!;
   }
   updateNetwork(id: string, value: NetworkUpdate): WorkspaceProfileView {
     this.assertOpen(); const profile = this.requireProfile(id);

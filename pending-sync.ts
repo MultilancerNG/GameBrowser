@@ -209,6 +209,15 @@ export class PendingSyncQueue {
     if (open) this.getOpen(open.profile_id, open.account_id);
   }
 
+  /** Inspect ownership state across every account without decrypting any payload. */
+  hasEncryptedState(): boolean {
+    return !!this.db.query<{ found: number }, []>(
+      "SELECT 1 AS found FROM pending_closes LIMIT 1",
+    ).get() || !!this.db.query<{ found: number }, []>(
+      "SELECT 1 AS found FROM pending_open_sessions LIMIT 1",
+    ).get();
+  }
+
   close(): void {
     this.db.close();
     this.key.fill(0);
@@ -688,11 +697,11 @@ export interface PendingSyncInitialization {
 }
 
 function queueStateExists(path: string): boolean {
-  return existsSync(path) || existsSync(`${path}-wal`) || existsSync(`${path}-shm`);
+  return existsSync(path) || existsSync(`${path}-wal`) || existsSync(`${path}-shm`) || existsSync(`${path}-journal`);
 }
 
 function queueHasEncryptedState(path: string): boolean {
-  if (!existsSync(path)) return false;
+  if (!existsSync(path)) return queueStateExists(path);
   let db: Database | undefined;
   try {
     db = new Database(path, { readonly: true });
@@ -799,7 +808,14 @@ export class PendingSyncRuntime {
     return queueStateExists(this.path);
   }
 
+  hasEncryptedState(): boolean {
+    return this.queueValue?.hasEncryptedState() ?? (queueStateExists(this.path) && queueHasEncryptedState(this.path));
+  }
+
   initialize(encodedKey?: string): PendingSyncInitialization {
+    if (!existsSync(this.path) && queueStateExists(this.path)) {
+      throw new Error("pending sync storage is incomplete; preserve its database sidecars and recover the original database before initializing");
+    }
     const storedKey = this.keyPath && existsSync(this.keyPath)
       ? readQueueKey(this.keyPath)
       : undefined;

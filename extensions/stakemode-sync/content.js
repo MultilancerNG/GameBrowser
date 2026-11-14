@@ -43,7 +43,7 @@
     }
   };
   function localPause(reason, notify = true) {
-    config = { ...config, role: 'manual', active: false };
+    config = { ...config, ...(config.preserveAssignments ? {} : { role: 'manual' }), active: false };
     generation++;
     clearTimeout(scrollTimer); scrollTimer = null;
     if (notify) send({ type: 'MANUAL_OVERRIDE', enabled: true, reason: compact(reason) });
@@ -51,12 +51,12 @@
   function configure(packet) {
     if (!packet || !['admin', 'follower', 'manual'].includes(packet.role) || !Number.isSafeInteger(packet.epoch) || packet.epoch < 0 || !Array.isArray(packet.origins) || packet.origins.length > 32) return localPause('Invalid browser configuration');
     if (packet.origins.some((origin) => { try { const url = new URL(origin); const local = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname); return (url.protocol !== 'https:' && !local) || url.origin !== origin; } catch { return true; } })) return localPause('Invalid approved origin');
-    const role = packet.paused === true && packet.controller !== 'worker' ? 'manual' : packet.role;
-    const changed = config.epoch !== packet.epoch || config.role !== role || config.active !== (packet.active !== false) || config.connected !== (packet.connected !== false) || config.origins.join('|') !== packet.origins.join('|');
+    const role = packet.paused === true && packet.controller !== 'worker' && !packet.preserveAssignments ? 'manual' : packet.role;
+    const changed = config.epoch !== packet.epoch || config.role !== role || config.active !== (packet.active !== false && packet.paused !== true) || config.connected !== (packet.connected !== false) || config.origins.join('|') !== packet.origins.join('|');
     if (changed) { generation++; clearTimeout(scrollTimer); scrollTimer = null; lastReplaySeq = 0; replayIds.clear(); }
-    config = { connected: packet.connected !== false, role, origins: [...packet.origins], epoch: packet.epoch, active: packet.active !== false, ...(packet.controller === 'worker' ? { controller: 'worker' } : {}) };
+    config = { connected: packet.connected !== false, role, origins: [...packet.origins], epoch: packet.epoch, active: packet.active !== false && packet.paused !== true, ...(packet.preserveAssignments ? { preserveAssignments: true } : {}), ...(packet.controller === 'worker' ? { controller: 'worker' } : {}) };
     if (changed) reportPage();
-    if (config.controller !== 'worker' && (sensitivePath.test(location.pathname) || hasChallenge())) localPause('Authentication or verification page requires manual control');
+    if (config.role !== 'manual' && config.active && config.controller !== 'worker' && (sensitivePath.test(location.pathname) || hasChallenge())) localPause('Authentication or verification page requires manual control');
   }
   function hasChallenge() {
     return !!document.querySelector('iframe[src*="challenges.cloudflare.com"],iframe[src*="hcaptcha.com"],iframe[src*="recaptcha"],.cf-turnstile,.h-captcha,.g-recaptcha,[data-sitekey],input[autocomplete="one-time-code"],input[type="password"]');
@@ -247,7 +247,7 @@
   const onScrollIntent = (event) => {
     if (event.isTrusted && !replaying && isReady('admin') && (event.type !== 'keydown' || ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key))) lastScrollIntent = Date.now();
   };
-  const onNavigation = () => { generation++; reportPage(); if (config.controller !== 'worker' && config.role !== 'manual') localPause('Page navigation requires synchronization review'); };
+  const onNavigation = () => { generation++; reportPage(); if (config.controller !== 'worker' && config.role !== 'manual' && !config.preserveAssignments) localPause('Page navigation requires synchronization review'); };
   document.addEventListener('click', onClick, true);
   document.addEventListener('input', onInput, true);
   document.addEventListener('scroll', scrollCapture, true);

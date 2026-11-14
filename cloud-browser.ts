@@ -156,6 +156,8 @@ export interface CloudBrowserOptions {
   readSession: (endpoint: string, captureSeed: SessionCaptureSeed, options?: { background?: boolean }) => Promise<string>;
   /** Restore the bundle and open startup pages over ONE CDP attach, then detach. */
   applySession: (endpoint: string, bundle: string, urls: readonly string[]) => Promise<void>;
+  /** Prepare device-owned extensions after the authoritative Cloud identity is materialized. */
+  beforeLaunch?: (profile: Profile) => Promise<void>;
   heartbeatMs?: number;
   /** Checkpoint the open tabs soon after browser storage changes on disk. On by default. */
   storageCheckpoints?: boolean;
@@ -824,6 +826,15 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       // An interrupted restore must not leave partially replaced disk state trusted.
       this.options.launcher.recordCloudSession(profileId, null);
       const startBrowser = async () => {
+        const preparedProfile = this.options.store.getProfile(profileId);
+        if (!preparedProfile) throw new Error("Cloud profile disappeared before browser preparation");
+        if (this.options.beforeLaunch) await this.options.beforeLaunch(preparedProfile);
+        const current = this.requireContext(true), registration = queue.getOpen(profileId, accountId);
+        // An admitted open finishes before releaseAll captures it. Account,
+        // device and registration authority must still survive preparation.
+        if (current.queue !== queue || current.accountId !== accountId || current.deviceId !== deviceId
+          || registration?.registrationId !== registrationId || registration?.phase !== "opening") throw new Error("Cloud browser access changed before launch");
+        if (startupLease.error) throw startupLease.error;
         return await this.options.launcher.start(profileId, chromeArgs, {
           autoNavigate: false,
           restoreLocalSession: false,

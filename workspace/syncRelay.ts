@@ -9,6 +9,7 @@ interface RegisteredProfile {
   paused: boolean;
   explicitPaused: boolean;
   activeOrigin: string;
+  activeUrl: string;
   queued: ActionPacket[];
   timer?: ReturnType<typeof setTimeout>;
   awaiting?: { id: string; epoch: number; timer: ReturnType<typeof setTimeout> };
@@ -16,8 +17,10 @@ interface RegisteredProfile {
 export interface RelayProfileStatus { profileId: string; role: SyncRole; paused: boolean; connected: boolean; origin: string; queued: number; }
 export interface SyncRelayOptions {
   controller?: SyncController;
+  preserveAssignments?: boolean;
   isAuthorized?: (profileId: string) => boolean;
   onChange?: () => void;
+  onAction?: (profileId: string, action: ActionPacket) => void;
   onManual?: (profileId: string, reason: string) => void;
   random?: () => number;
   ackTimeoutMs?: number;
@@ -63,7 +66,7 @@ export class SyncRelay {
     this.pacingValue = pacing;
     for (const p of this.profiles.values()) {
       p.config.origins = p.config.origins.filter(origin => this.approvedOrigins.has(origin));
-      if (this.controller === "extension" && !p.config.origins.length && p.config.role !== "manual") { p.config.role = "manual"; this.options.onManual?.(p.config.profileId, "origin_removed"); }
+      if (this.controller === "extension" && !p.config.origins.length && p.config.role !== "manual") this.interrupt(p.config.profileId, "origin_removed");
     }
     this.invalidate();
   }
@@ -71,7 +74,7 @@ export class SyncRelay {
     if (!isSafeProfileId(profileId)) throw new Error("Workspace profile ID is invalid");
     let p = this.profiles.get(profileId);
     if (!p) {
-      p = { config: { profileId, token: sessionToken(), role: "manual", origins: [], relayUrl: this.relayUrlValue, ...(this.controller === "worker" ? { controller: "worker" as const } : {}), epoch: ++this.epochValue }, paused: false, explicitPaused: false, activeOrigin: "", queued: [] };
+      p = { config: { profileId, token: sessionToken(), role: "manual", origins: [], relayUrl: this.relayUrlValue, ...(this.controller === "worker" ? { controller: "worker" as const } : {}), ...(this.options.preserveAssignments ? { preserveAssignments: true } : {}), epoch: ++this.epochValue }, paused: false, explicitPaused: false, activeOrigin: "", activeUrl: "", queued: [] };
       this.profiles.set(profileId, p);
     }
     if (origin) {
@@ -84,7 +87,7 @@ export class SyncRelay {
   tokenFor(profileId: string): string | undefined { return this.profiles.get(profileId)?.config.token; }
   configFor(profileId: string): SyncProfileConfig | undefined {
     const p = this.profiles.get(profileId);
-    return p ? { ...p.config, origins: [...p.config.origins] } : undefined;
+    return p ? { ...p.config, origins: [...p.config.origins], paused: p.paused } : undefined;
   }
   statuses(): RelayProfileStatus[] {
     return [...this.profiles].map(([profileId, p]) => ({ profileId, role: p.config.role, paused: p.paused, connected: !!p.transport, origin: p.activeOrigin, queued: p.queued.length + (p.awaiting ? 1 : 0) }));
@@ -119,7 +122,7 @@ export class SyncRelay {
     if (!p || !sameToken(token, p.config.token) || !this.authorized(profileId)) return false;
     if (p.transport) { p.transport.close(4009, "A profile connection already exists"); this.disconnect(profileId, p.transport); }
     p.transport = transport;
-    if (this.controller === "worker") p.paused = p.explicitPaused;
+    if (this.controller === "worker" || this.options.preserveAssignments) { p.paused = p.explicitPaused; this.invalidateProfile(p); }
     transport.send(this.publicConfig(p));
     this.options.onChange?.();
     return true;
@@ -140,17 +143,27 @@ export class SyncRelay {
       return;
     }
     if (v.type === "PAGE") {
-      try { const url = approvedUrl(v.url, p.config.origins); p.activeOrigin = new URL(url).origin; }
-      catch { p.activeOrigin = ""; this.manual(profileId, "unapproved_page"); }
+      if (this.options.preserveAssignments && v.url === "about:blank") { p.activeOrigin = ""; p.activeUrl = "about:blank"; this.options.onChange?.(); return; }
+      try {
+        const url = approvedUrl(v.url, p.config.origins);
+        const changed = p.activeUrl !== url;
+        p.activeOrigin = new URL(url).origin; p.activeUrl = url;
+        if (changed && this.options.preserveAssignments && p.config.role === "admin") this.lastAdminSequence = 0;
+      }
+      catch { p.activeOrigin = ""; this.interrupt(profileId, "unapproved_page"); }
       this.options.onChange?.();
       return;
     }
-    if (v.type === "MANUAL_OVERRIDE") { this.manual(profileId, "operator_manual"); return; }
+    if (v.type === "MANUAL_OVERRIDE") {
+      if (!this.options.preserveAssignments || v.source === "extension-popup") this.manual(profileId, "operator_manual");
+      else this.interrupt(profileId, "page_requires_manual");
+      return;
+    }
     if (v.type === "ACK") {
       if (typeof v.id !== "string" || !p.awaiting || p.awaiting.id !== v.id || v.epoch !== p.awaiting.epoch || v.epoch !== p.config.epoch) return;
       clearTimeout(p.awaiting.timer);
       p.awaiting = undefined;
-      if (v.status !== "applied") this.manual(profileId, "action_rejected");
+      if (v.status !== "applied") this.interrupt(profileId, "action_rejected");
       else this.dispatchNext(profileId, p);
       this.options.onChange?.();
       return;
@@ -164,9 +177,10 @@ export class SyncRelay {
       transport.send({ type: "ACTION_REJECTED", reason: "sequence_or_origin_mismatch" }); return;
     }
     this.lastAdminSequence = action.seq;
+    this.options.onAction?.(profileId, action);
     for (const [id, target] of this.profiles) {
       if (id === profileId || target.config.role !== "follower" || target.paused || !target.transport || target.activeOrigin !== action.origin || !target.config.origins.includes(action.origin)) continue;
-      if (target.queued.length + (target.awaiting ? 1 : 0) >= MAX_QUEUE) { this.manual(id, "queue_limit"); continue; }
+      if (target.queued.length + (target.awaiting ? 1 : 0) >= MAX_QUEUE) { this.interrupt(id, "queue_limit"); continue; }
       target.queued.push({ ...action, epoch: target.config.epoch });
       this.dispatchNext(id, target);
     }
@@ -181,11 +195,11 @@ export class SyncRelay {
       const admin = [...this.profiles].find(([, profile]) => profile.config.role === "admin");
       if (!admin || !this.authorized(admin[0]) || !this.authorized(id)) { this.suspend(p); return; }
       const action = p.queued.shift();
-      if (!action || action.epoch !== p.config.epoch || p.activeOrigin !== action.origin) { this.manual(id, "origin_changed"); return; }
+      if (!action || action.epoch !== p.config.epoch || p.activeOrigin !== action.origin) { this.interrupt(id, "origin_changed"); return; }
       p.awaiting = { id: action.id, epoch: action.epoch, timer: setTimeout(() => {
-        if (p.awaiting?.id === action.id && p.awaiting.epoch === action.epoch) this.manual(id, "ack_timeout");
+        if (p.awaiting?.id === action.id && p.awaiting.epoch === action.epoch) this.interrupt(id, "ack_timeout");
       }, this.options.ackTimeoutMs ?? 6000) };
-      try { p.transport.send(action); } catch { this.manual(id, "transport_error"); }
+      try { p.transport.send(action); } catch { this.interrupt(id, "transport_error"); }
     };
     if (this.pacing === "fast") next();
     else p.timer = setTimeout(next, 450 + Math.floor(Math.min(0.999999, Math.max(0, (this.options.random ?? Math.random)())) * 1301));
@@ -194,9 +208,12 @@ export class SyncRelay {
     const p = this.profiles.get(profileId);
     if (!p || (transport && p.transport !== transport)) return;
     p.transport = undefined;
-    p.activeOrigin = "";
-    if (this.controller === "worker") this.suspend(p);
-    else this.manual(profileId, "disconnected");
+    p.activeOrigin = ""; p.activeUrl = "";
+    if (this.controller === "worker" || this.options.preserveAssignments) {
+      // Advance the generation and discard all prior queued/awaited actions.
+      p.paused = true;
+      if (p.config.role === "admin") this.invalidate(); else this.invalidateProfile(p);
+    } else this.manual(profileId, "disconnected");
   }
   /** Retire only a deleted local profile; its old token must never reconnect. */
   unregister(profileId: string): void {
@@ -229,8 +246,15 @@ export class SyncRelay {
     if (affectsAdmin) this.invalidate(); else this.invalidateProfile(p);
     this.options.onManual?.(profileId, reason);
   }
+  /** A protective pause never rewrites a user-selected role. */
+  interrupt(profileId: string, reason: string): void {
+    const p = this.require(profileId);
+    if (!this.options.preserveAssignments) { this.manual(profileId, reason); return; }
+    p.paused = true;
+    if (p.config.role === "admin") this.invalidate(); else this.invalidateProfile(p);
+  }
   private publicConfig(p: RegisteredProfile): object {
-    return { type: "CONFIG", profileId: p.config.profileId, role: p.config.role, origins: p.config.origins, epoch: p.config.epoch, paused: p.paused, ...(this.controller === "worker" ? { controller: "worker" } : {}) };
+    return { type: "CONFIG", profileId: p.config.profileId, role: p.config.role, origins: p.config.origins, epoch: p.config.epoch, paused: p.paused, ...(this.controller === "worker" ? { controller: "worker" } : {}), ...(this.options.preserveAssignments ? { preserveAssignments: true } : {}) };
   }
   private suspend(p: RegisteredProfile): void {
     if (p.timer) clearTimeout(p.timer);
@@ -243,7 +267,7 @@ export class SyncRelay {
     if (p.timer) clearTimeout(p.timer);
     if (p.awaiting) clearTimeout(p.awaiting.timer);
     p.timer = undefined; p.awaiting = undefined; p.queued = []; p.config.epoch = epoch;
-    try { p.transport?.send(this.publicConfig(p)); } catch { p.transport = undefined; if (this.controller === "worker") p.paused = true; else p.config.role = "manual"; }
+    try { p.transport?.send(this.publicConfig(p)); } catch { p.transport = undefined; if (this.controller === "worker" || this.options.preserveAssignments) p.paused = true; else p.config.role = "manual"; }
   }
   private invalidateProfile(p: RegisteredProfile): void {
     this.resetProfile(p, ++this.epochValue);

@@ -1,6 +1,6 @@
 [package]
 name = "aliasmode-desktop"
-version = "0.1.0-beta.82"
+version = "0.1.0-beta.83"
 description = "GameBrowser Windows desktop shell by Solomon Gbeta"
 edition = "2021"
 rust-version = "1.89"

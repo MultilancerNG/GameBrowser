@@ -15,9 +15,10 @@
   let activeTab = null;
   let state = { connected: false, role: 'manual', origins: [], epoch: 0, reason: 'Connecting; synchronization is paused' };
 
+  const retainAssignments = () => state.preserveAssignments === true || config?.preserveAssignments === true;
   const workerControlled = () => state.controller === 'worker' || config?.controller === 'worker';
   const validRelay = (value) => {
-    try { const url = new URL(value); return typeof value === 'string' && value.length <= 2048 && ['ws:', 'wss:'].includes(url.protocol) && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && Number(url.port || (url.protocol === 'wss:' ? 443 : 80)) > 0 && ['/relay', '/workspace/relay'].includes(url.pathname) && !url.username && !url.password && !url.search && !url.hash; } catch { return false; }
+    try { const url = new URL(value); return typeof value === 'string' && value.length <= 2048 && ['ws:', 'wss:'].includes(url.protocol) && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) && Number(url.port || (url.protocol === 'wss:' ? 443 : 80)) > 0 && ['/relay', '/workspace/relay', '/workspace/cloud/relay'].includes(url.pathname) && !url.username && !url.password && !url.search && !url.hash; } catch { return false; }
   };
   const isRecord = (v) => v && typeof v === 'object' && !Array.isArray(v);
   const cleanUrl = (value) => {
@@ -45,12 +46,12 @@
     }));
   }
   function pause(reason, notify = false) {
-    state = { ...state, ...(workerControlled() ? {} : { role: 'manual' }), reason };
+    state = { ...state, ...(workerControlled() || retainAssignments() ? {} : { role: 'manual' }), paused: true, reason };
     generation++;
     if (Number.isInteger(activeTab)) {
       try { api.tabs.sendMessage(activeTab, { type: 'PAUSE', reason }).catch(() => {}); } catch { /* Page may already be closing. */ }
     }
-    if (notify && state.connected && !workerControlled()) send({ type: 'MANUAL_OVERRIDE', enabled: true, reason: reason.slice(0, 160) });
+    if (notify && state.connected && !workerControlled()) send({ type: 'MANUAL_OVERRIDE', source: 'content-script', enabled: true, reason: reason.slice(0, 160) });
     void publish();
   }
   function clearTimers() {
@@ -74,6 +75,7 @@
       const tab = await api.tabs.get(tabId);
       if (tabId !== activeTab || ticket !== generation) return;
       const page = cleanUrl(tab.url);
+      if (retainAssignments() && tab.url === 'about:blank') { send({ type: 'PAGE', origin: '', url: 'about:blank' }); await publish(); return; }
       if (page && (workerControlled() || state.origins.includes(page.origin))) send({ type: 'PAGE', ...page });
       else {
         send({ type: 'PAGE', origin: '', url: '' });
@@ -94,8 +96,8 @@
       if (packet.controller !== 'worker' && packet.origins.some((origin) => !config.origins.includes(origin))) return pause('Relay origin configuration does not match this profile', true);
       clearTimeout(helloTimer); helloTimer = null;
       generation++;
-      const role = packet.paused === true && packet.controller !== 'worker' ? 'manual' : packet.role;
-      state = { connected: true, role, paused: packet.paused === true, origins: [...packet.origins], epoch: packet.epoch, reason: packet.paused === true ? 'Synchronization paused by workspace' : role === 'manual' ? 'Manual control' : 'Ready', ...(packet.controller === 'worker' ? { controller: 'worker' } : {}) };
+      const role = packet.paused === true && packet.controller !== 'worker' && !retainAssignments() ? 'manual' : packet.role;
+      state = { connected: true, role, paused: packet.paused === true, origins: [...packet.origins], epoch: packet.epoch, reason: packet.paused === true ? 'Synchronization paused by workspace' : role === 'manual' ? 'Manual control' : 'Ready', ...(packet.controller === 'worker' ? { controller: 'worker' } : {}), ...(retainAssignments() ? { preserveAssignments: true } : {}) };
       reconnectAttempt = 0;
       lastHeartbeat = Date.now();
       void reportPage();
@@ -103,7 +105,7 @@
     }
     if (packet.type === 'ACTION') {
       if (workerControlled()) return;
-      if (!state.connected || state.role !== 'follower' || packet.epoch !== state.epoch || !Number.isInteger(activeTab)) return send({ type: 'ACK', id: String(packet.id ?? '').slice(0, 80), epoch: Number.isSafeInteger(packet.epoch) ? packet.epoch : -1, status: 'rejected', reason: 'Profile is paused or action is stale' });
+      if (!state.connected || state.paused || state.role !== 'follower' || packet.epoch !== state.epoch || !Number.isInteger(activeTab)) return send({ type: 'ACK', id: String(packet.id ?? '').slice(0, 80), epoch: Number.isSafeInteger(packet.epoch) ? packet.epoch : -1, status: 'rejected', reason: 'Profile is paused or action is stale' });
       const currentGeneration = generation;
       api.tabs.sendMessage(activeTab, packet).then(() => {
         if (generation !== currentGeneration) return;
@@ -141,13 +143,16 @@
     if (!isRecord(message)) return false;
     if (message.type === 'GET_STATE') { respond({ ...state, profileId: config?.profileId ?? null, active: sender.tab?.id === activeTab }); return false; }
     if (message.type === 'MANUAL_OVERRIDE') {
-      if (workerControlled()) {
+      if (workerControlled() || retainAssignments() && sender.url === api.runtime.getURL('popup.html')) {
         if (sender.url !== api.runtime.getURL('popup.html')) { respond({ ok: false }); return false; }
         const ok = send({ type: 'MANUAL_OVERRIDE', source: 'extension-popup', enabled: true });
         state.reason = ok ? 'Manual control requested in Live workspace' : 'Reconnect the workspace to change this assignment';
         void publish(); respond({ ok }); return false;
       }
-      pause('Operator selected manual control', true);
+      if (retainAssignments()) {
+        if (!sender.tab || sender.tab.id !== activeTab) return false;
+        pause(typeof message.reason === 'string' ? message.reason.slice(0, 160) : 'Page requires manual control', true);
+      } else pause('Operator selected manual control', true);
       respond({ ok: true }); return false;
     }
     if (workerControlled() && ['CAPTURE_ACTION', 'ACK'].includes(message.type)) return false;
@@ -155,7 +160,7 @@
     const page = cleanUrl(sender.url ?? sender.tab.url);
     if (!page || !state.origins.includes(page.origin)) return false;
     if (message.type === 'CAPTURE_ACTION') {
-      if (!state.connected || state.role !== 'admin' || !isRecord(message.action) || message.action.origin !== page.origin || message.action.url !== page.url) return false;
+      if (!state.connected || state.paused || state.role !== 'admin' || !isRecord(message.action) || message.action.origin !== page.origin || message.action.url !== page.url) return false;
       const packet = { ...message.action, type: 'ACTION', epoch: state.epoch, seq: ++sequence };
       if (JSON.stringify(packet).length <= 8192) send(packet);
       else pause('Action exceeded packet limit', true);
@@ -186,7 +191,7 @@
       if (loaded.origins.some((origin) => { try { const url = new URL(origin); const localHttp = url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname); return (url.protocol !== 'https:' && !localHttp) || url.origin !== origin; } catch { return true; } })) throw new Error('Invalid approved origin');
       if (!validRelay(loaded.relayUrl)) throw new Error('Relay must use a validated loopback workspace endpoint');
       if (loaded.controller !== undefined && !['extension', 'worker'].includes(loaded.controller)) throw new Error('Invalid synchronization controller');
-      config = { profileId: loaded.profileId, token: loaded.token, origins: [...loaded.origins], relayUrl: loaded.relayUrl, ...(loaded.controller ? { controller: loaded.controller } : {}) };
+      config = { profileId: loaded.profileId, token: loaded.token, origins: [...loaded.origins], relayUrl: loaded.relayUrl, ...(loaded.controller ? { controller: loaded.controller } : {}), ...(loaded.preserveAssignments === true ? { preserveAssignments: true } : {}) };
   }
   (async () => {
     try {

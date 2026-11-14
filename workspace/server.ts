@@ -1,10 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { Server, ServerWebSocket } from "bun";
 import type { Launcher } from "../launcher.ts";
 import type { ProfileStore } from "../store.ts";
 import type { Profile } from "../types.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
+import { RelayBrowserFollowing } from "./browserFollowing.ts";
+import { RelaySessionController } from "./sessionController.ts";
 import type { BrowserSyncLifecycle } from "../browser-sync.ts";
 import { assertSafeProfileId } from "../profile-id.ts";
 import { BrowserBridge } from "./browserBridge.ts";
@@ -43,6 +46,10 @@ export interface StakeModeWorkspaceOptions {
   isAuthorized?: (profileId?: string) => boolean;
   authorizeLaunch?: (profileId: string) => Promise<boolean>;
   sync?: BrowserSyncLifecycle;
+  /** Standalone ownership: use the authenticated original relay for either engine. */
+  syncController?: "relay";
+  /** Called only after workspace same-origin and dashboard-token authentication. */
+  appFetch?: (request: Request, remoteAddress: string) => Response | undefined | Promise<Response | undefined>;
   capabilities?: { mode: "local" | "cloud"; identityManagement: boolean; contextKey?: string; manageProfilesUrl: string; settingsUrl: string };
 
   assets?: Record<string, { body: string | Uint8Array<ArrayBuffer>; contentType: string }>;
@@ -60,6 +67,9 @@ export class StakeModeWorkspace {
   readonly library: ProfileLibrary;
   readonly workflows: WorkspaceWorkflowEngine;
   readonly proxies: ProxyLibrary;
+  private browserFollowing?: RelayBrowserFollowing;
+  private readonly sync?: BrowserSyncLifecycle;
+  private quiescing?: Promise<void>;
   private workflowRoutes: WorkflowRoutes;
   private management: ManagementRoutes;
   private server?: Server<SocketState>;
@@ -78,12 +88,14 @@ export class StakeModeWorkspace {
   private relayUrl = "ws://127.0.0.1:8080/relay";
   private draftGroup?: { adminId: string | null; followerIds: string[] };
   private cleanedProfiles = new Set<string>();
+  private followingAttachments = new Map<string, Promise<void>>();
   private controlQueues = new Map<string, { count: number; chain: Promise<void> }>();
   constructor(private options: StakeModeWorkspaceOptions) {
+    if (options.sync && options.syncController) throw new Error("Choose one browser following controller");
     mkdirSync(join(options.stateRoot, "workspace"), { recursive: true, mode: 0o700 });
     this.settingsFile = join(options.stateRoot, "workspace", "settings.json");
-    this.relay = new SyncRelay({ controller: options.sync ? "worker" : "extension", isAuthorized: id => this.authorized(id), onChange: () => this.publishSnapshot(), onManual: (id, reason) => {
-      if (!this.changingManual && options.sync && reason === "operator_manual") {
+    this.relay = new SyncRelay({ controller: options.sync ? "worker" : "extension", preserveAssignments: options.syncController === "relay", isAuthorized: id => this.authorized(id), onChange: () => this.publishSnapshot(), onAction: (id, action) => this.browserFollowing?.noteAction(id, action), onManual: (id, reason) => {
+      if (!this.changingManual && this.sync && reason === "operator_manual") {
         void this.changeRole(id, "manual").catch(() => {});
       }
       if (!this.changingManual && this.manager?.getProfile(id)) {
@@ -105,8 +117,14 @@ export class StakeModeWorkspace {
     this.extensions = new ExtensionManager({ stateRoot: options.stateRoot,
       isProfileStopped: id => this.manager.canEditProfile(id), getProfileEngine: id => this.manager.getProfile(id)?.engine });
     this.registerProfiles(this.manager.list());
+    this.sync = options.sync ?? (options.syncController === "relay" ? new RelaySessionController({
+      stateRoot: options.stateRoot, relay: this.relay, profileExists: id => !!this.manager.getProfile(id),
+      hasLaunch: id => !!this.manager.getLaunch(id), isAuthorized: id => this.authorized(id),
+      setManual: (id, enabled) => { this.manager.setManual(id, enabled); }, changed: () => { this.reconcileFollowingConnections(); this.publishSnapshot(); },
+    }) : undefined);
     this.bridge = (options.bridgeFactory ?? (config => new BrowserBridge(config)))({
       controller: options.sync ? "worker" : "extension",
+      ...(options.syncController ? { captureFallback: { connected: (id: string) => this.relay.statuses().some(row => row.profileId === id && row.connected) } } : {}),
       authorizeLaunch: options.authorizeLaunch,
       getLaunch: id => this.authorized(id) ? this.manager.getLaunch(id) : null,
       getConfig: id => this.relay.configFor(id),
@@ -116,21 +134,31 @@ export class StakeModeWorkspace {
       onError: (profileId, error) => this.publishProfilePacket(profileId, { type: "FRAME_ERROR", profileId, error }),
       onFirefoxConnect: (id, token, transport) => this.relay.authenticate(id, token, transport),
       onFirefoxPacket: (id, transport, packet) => this.relay.receive(id, transport, packet),
-      onDisconnect: id => this.relay.disconnect(id),
-      beforeBrowserAction: id => { if (!options.sync) this.relay.manual(id, "operator_navigation"); },
+      onDisconnect: (id, transport) => { this.browserFollowing?.disconnected(id); this.relay.disconnect(id, transport); },
+      beforeBrowserAction: id => { if (!this.sync) this.relay.manual(id, "operator_navigation"); },
       onNavigation: (id, value) => {
-        if (options.sync) return;
+        if (this.sync && !options.syncController || options.syncController && value === "about:blank") return;
+        const interrupt = () => options.syncController ? this.relay.interrupt(id, "manual_navigation") : this.relay.manual(id, "manual_navigation");
         try {
           const url = new URL(value), config = this.relay.configFor(id);
-          if (!config?.origins.includes(url.origin) || url.search || url.hash || url.username || url.password) this.relay.manual(id, "manual_navigation");
-        } catch { this.relay.manual(id, "manual_navigation"); }
+          if (!config?.origins.includes(url.origin) || url.search || url.hash || url.username || url.password) interrupt();
+        } catch { interrupt(); }
       },
-      onBrowserState: browser => this.publishProfilePacket(browser.profileId, { type: "BROWSER_STATE", browser }),
+      onBrowserState: browser => { this.browserFollowing?.observe(browser); this.publishProfilePacket(browser.profileId, { type: "BROWSER_STATE", browser }); },
+      onOperatorBrowserAction: (_id, command, browser) => this.browserFollowing?.observe(browser, command),
       contentScriptPath: join(options.syncExtensionRoot ?? process.env.STAKEMODE_SYNC_EXTENSION_ROOT ?? join(import.meta.dir, "..", "extensions", "stakemode-sync"), "content.js"),
     });
+    if (options.syncController === "relay") this.browserFollowing = new RelayBrowserFollowing({
+      session: () => this.sync!.status(), generation: () => (this.sync as RelaySessionController).generation,
+      stamp: id => this.relay.configFor(id)?.epoch ?? -1,
+      origins: () => this.relay.origins, pacing: () => this.relay.pacing,
+      ready: id => { const status = this.relay.statuses().find(row => row.profileId === id); return this.authorized(id) && !!this.manager.getLaunch(id) && !!status?.connected && !status.paused && status.role !== "manual"; },
+      apply: (id, key, event, current) => this.bridge.applyFollowedBrowserState(id, key, event, current),
+      pause: id => this.relay.interrupt(id, "browser_following_failed"),
+    });
     this.management = new ManagementRoutes({ manager: this.manager, bridge: this.bridge, relay: this.relay, extensions: this.extensions, library: this.library,
-      onRoleChange: options.sync ? (id, role) => this.changeRole(id, role) : undefined,
-      onPauseChange: options.sync ? (id, enabled) => this.changePause(id, enabled) : undefined,
+      onRoleChange: this.sync ? (id, role) => this.changeRole(id, role) : undefined,
+      onPauseChange: this.sync ? (id, enabled) => this.changePause(id, enabled) : undefined,
       snapshot: () => this.snapshot(), changed: () => this.publishSnapshot(), openExtensionPage: (id, extensionId, kind) => this.openExtensionPage(id, extensionId, kind) });
     this.workflows = new WorkspaceWorkflowEngine({ stateRoot: options.stateRoot,
       execute: (id, step, signal) => this.bridge.executeWorkflowStep(id, step, signal),
@@ -145,13 +173,31 @@ export class StakeModeWorkspace {
       for (const profile of profiles) {
         const status = this.relay.statuses().find(row => row.profileId === profile.id);
         if (profile.overBudget && profile.budgetAction !== "notify" && !status?.paused) {
-          if (options.sync) void this.changePause(profile.id, true).catch(() => {});
+          if (this.sync) void this.changePause(profile.id, true).catch(() => {});
           else if (status?.role !== "manual") this.relay.manual(profile.id, "resource_budget");
         }
         if (profile.state === "stopped") { this.bridge?.detach(profile.id); if (status?.connected) this.relay.disconnect(profile.id); }
       }
-      this.publishSnapshot();
+      this.reconcileFollowingConnections(); this.publishSnapshot();
     });
+  }
+  /** Publish external identity/import/Trash changes through the same workspace. */
+  refreshProfiles(): void { this.registerProfiles(this.manager.list()); this.refreshVisible(); this.publishSnapshot(); }
+  /** Used only after the identity store has confirmed permanent local deletion. */
+  async forgetProfile(id: string): Promise<void> {
+    assertSafeProfileId(id);
+    if (this.manager.getProfile(id) || this.manager.getLaunch(id)) throw new Error("Profile deletion must be confirmed before workspace cleanup");
+    await this.cleanupProfile(id); this.refreshProfiles();
+  }
+  private reconcileFollowingConnections(): void {
+    if (this.shutdown || !this.options.syncController || !this.bridge) return;
+    const session = this.sync?.status();
+    if (!session?.adminId) return;
+    for (const id of [session.adminId, ...session.followerIds]) {
+      if (!this.authorized(id) || !this.manager.getLaunch(id) || this.followingAttachments.has(id)) continue;
+      const pending = this.bridge.attach(id).then(() => { if (!this.shutdown && session.adminId === id) this.browserFollowing?.seed(id); }).catch(() => {}).finally(() => this.followingAttachments.delete(id));
+      this.followingAttachments.set(id, pending);
+    }
   }
   private registerProfiles(profiles: WorkspaceProfileView[]): void {
     for (const p of profiles) {
@@ -159,6 +205,17 @@ export class StakeModeWorkspace {
       const origin = p.urls.length ? new URL(p.urls[0]!).origin : undefined;
       this.relay.register(p.id, origin && this.relay.origins.includes(origin) ? origin : undefined);
     }
+  }
+  /** Cloud payloads must be materialized and authorized before launch hooks
+   * read their device-only synchronizer/add-on directories. */
+  async prepareLaunch(id: string, profile: Profile): Promise<void> {
+    assertSafeProfileId(id);
+    await this.options.authorize?.();
+    const cached = this.options.store.getProfile(id);
+    if (!this.authorized(id) || profile.id !== id || !cached || !isDeepStrictEqual(cached, profile)) throw new Error("Profile launch identity or access changed");
+    await this.prepareProfile(id, cached);
+    await this.options.authorize?.();
+    if (!this.authorized(id) || !isDeepStrictEqual(this.options.store.getProfile(id), cached)) throw new Error("Profile launch identity or access changed during preparation");
   }
   private async prepareProfile(id: string, _profile: Profile): Promise<void> {
     // Starting an already running profile is idempotent. Never rewrite code or
@@ -170,6 +227,7 @@ export class StakeModeWorkspace {
     this.relay.register(id);
     const origin = dto.urls[0] ? new URL(dto.urls[0]).origin : undefined;
     if (origin && this.relay.origins.includes(origin)) this.relay.setOrigin(id, origin);
+    else if (this.options.syncController) this.relay.interrupt(id, "manual_startup");
     else this.relay.manual(id, "manual_startup");
     const config = this.relay.configFor(id)!;
     this.extensionDirs.set(id, await generateSyncExtension({ stateRoot: this.options.stateRoot, profileId: id, config, sourceDirectory: this.options.syncExtensionRoot }));
@@ -194,26 +252,26 @@ export class StakeModeWorkspace {
   }
   snapshot(): object {
     if (!this.authorized()) return { profiles: [], groups: [], origins: [], error: "Workspace access changed; reconnect from Profiles" };
-    const session = this.options.sync?.status();
+    const session = this.sync?.status();
     const profiles = this.manager.list().filter(profile => this.authorized(profile.id));
     this.registerProfiles(profiles);
-    if (session && (!this.draftGroup || session.adminId)) {
+    if (session && !this.options.syncController && (!this.draftGroup || session.adminId)) {
       const ids = new Set(profiles.map(profile => profile.id));
       const adminId = session.adminId && ids.has(session.adminId) ? session.adminId : null;
       this.relay.setGroup(adminId, adminId ? session.followerIds.filter(id => ids.has(id)) : []);
     }
     const statuses = new Map(this.relay.statuses().map(row => [row.profileId, row]));
     return { version: ALIASMODE_VERSION, capabilities: this.options.capabilities, syncSession: session, profiles: profiles.map(p => { const metadata = this.library.get(p.id); return { ...p, ...(statuses.get(p.id) ?? { role: "manual", paused: false, connected: false, origin: "", queued: 0 }),
-      ...(session ? { connected: session.active && (session.adminId === p.id || session.followerIds.includes(p.id)) && !!this.manager.getLaunch(p.id),
+      ...(session && !this.options.syncController ? { connected: session.active && (session.adminId === p.id || session.followerIds.includes(p.id)) && !!this.manager.getLaunch(p.id),
         paused: this.relay.explicitlyPausedProfileIds().includes(p.id) || ((session.adminId === p.id || session.followerIds.includes(p.id)) && !session.active) } : {}),
       groupId: metadata.groupId, tags: metadata.tags, notes: metadata.notes, bookmarkCount: metadata.bookmarks.length,
-      managementAvailable: this.options.capabilities?.identityManagement ?? true, syncMechanism: this.options.sync ? "Trusted browser worker" : p.engine === "firefox" ? "Playwright page binding" : "Manifest V3 extension" }; }), groups: this.library.listGroups(),
+      managementAvailable: this.options.capabilities?.identityManagement ?? true, syncMechanism: this.sync && !this.options.syncController ? "Trusted browser worker" : p.engine === "firefox" ? "Playwright page binding" : this.options.syncController ? "Manifest V3 extension / authenticated page binding" : "Manifest V3 extension" }; }), groups: this.library.listGroups(),
       pacing: this.relay.pacing, origins: this.relay.origins, epoch: this.relay.epoch,
       limits: { maxVisible: MAX_VISIBLE_PROFILES, maxProfiles: 256, maxConcurrentLaunches: 4, screenshotFps: 2 },
-      policy: { credentialsMirrored: this.options.sync ? this.options.sync.currentPolicy?.()?.sensitiveControls !== "manual" : false, financialActionsMirrored: this.options.sync ? this.options.sync.currentPolicy?.()?.sensitiveControls !== "manual" : false, actionsRequireHumanOperator: true } };
+      policy: { credentialsMirrored: this.sync && !this.options.syncController ? this.sync.currentPolicy?.()?.sensitiveControls !== "manual" : false, financialActionsMirrored: this.sync && !this.options.syncController ? this.sync.currentPolicy?.()?.sensitiveControls !== "manual" : false, actionsRequireHumanOperator: true } };
   }
   async configureSyncPolicy(reconnect = true): Promise<void> {
-    await this.options.sync?.configurePolicy?.({ origins: this.relay.origins, pacing: this.relay.pacing, sensitiveControls: "manual",
+    await this.sync?.configurePolicy?.({ origins: this.relay.origins, pacing: this.relay.pacing, sensitiveControls: "manual",
       pausedProfileIds: this.relay.explicitlyPausedProfileIds() }, reconnect);
   }
   private async changePause(id: string, enabled: boolean): Promise<void> {
@@ -223,7 +281,7 @@ export class StakeModeWorkspace {
   }
   private async changeRole(id: string, role: SyncRole): Promise<void> {
     if (!this.authorized(id) || !this.manager.getProfile(id)) throw new Error("Profile access changed");
-    const runtime = this.options.sync;
+    const runtime = this.sync;
     if (!runtime) { this.relay.setRole(id, role); return; }
     const current = runtime.status();
     const configured = current.adminId ? current : this.draftGroup ?? current;
@@ -238,7 +296,7 @@ export class StakeModeWorkspace {
       if (!adminId || !followerIds.length) {
         this.draftGroup = { adminId, followerIds };
         this.changingManual = true;
-        try { this.relay.setRole(id, role); } finally { this.changingManual = false; }
+        try { this.manager.setManual(id, role === "manual"); this.relay.setRole(id, role); } finally { this.changingManual = false; }
         this.publishSnapshot(); return;
       }
       await this.configureSyncPolicy(false); await runtime.start(adminId, followerIds, false);
@@ -295,7 +353,7 @@ export class StakeModeWorkspace {
     close: (socket: ServerWebSocket<SocketState>): void => {
       clearTimeout(socket.data.authenticationTimer); this.sockets.delete(socket);
       socket.data.focused = undefined; socket.data.subscribed.clear();
-      if (socket.data.profileId) this.relay.disconnect(socket.data.profileId, socket.data.transport);
+      if (socket.data.profileId) (this.browserFollowing?.disconnected(socket.data.profileId), this.relay.disconnect(socket.data.profileId, socket.data.transport));
       this.refreshVisible();
     },
   };
@@ -350,9 +408,11 @@ export class StakeModeWorkspace {
       return json({ token, relayUrl: this.relayUrl, snapshot: this.snapshot() });
     }
     if (!this.validDashboardToken(request.headers.get("authorization")?.replace(/^Bearer /, ""))) return json({ error: "Workspace authorization required" }, 401);
-    if (url.pathname === "/workspace/api/sync" && this.options.sync) {
+    const appResponse = await this.options.appFetch?.(request, remoteAddress);
+    if (appResponse) return appResponse;
+    if (url.pathname === "/workspace/api/sync" && this.sync) {
       try {
-        const runtime = this.options.sync;
+        const runtime = this.sync;
         let session;
         if (request.method === "GET") session = runtime.status();
         else if (request.method === "DELETE") { this.draftGroup = undefined; session = await runtime.stop(); }
@@ -403,12 +463,12 @@ export class StakeModeWorkspace {
       if (!this.manager.getProfile(id)) return json({ error: "Profile not found" }, 404);
       if (operation === "start") { await this.manager.start(id); await this.bridge.attach(id); }
       else if (operation === "stop" || operation === "kill") {
-        if (!this.options.sync) this.relay.manual(id, "operator_stop"); await this.bridge.detach(id);
+        if (!this.sync) this.relay.manual(id, "operator_stop"); await this.bridge.detach(id);
         const stopped = operation === "kill" ? await this.manager.forceKill(id) : await this.manager.stop(id);
         if (!stopped) return json({ error: "Browser shutdown could not be confirmed", snapshot: this.snapshot() }, 409);
       } else if (operation === "manual") {
         if (typeof body.enabled !== "boolean") throw new Error("Manual mode must be boolean");
-        if (this.options.sync) await this.changeRole(id, body.enabled ? "manual" : "follower");
+        if (this.sync) await this.changeRole(id, body.enabled ? "manual" : "follower");
         else if (body.enabled) this.relay.setRole(id, "manual");
         else { this.manager.setManual(id, false); this.relay.setRole(id, "follower"); }
       } else if (operation === "pause") {
@@ -416,7 +476,7 @@ export class StakeModeWorkspace {
         await this.changePause(id, body.enabled);
       } else if (operation === "role") {
         if (!["admin", "follower", "manual"].includes(String(body.role))) throw new Error("Role is invalid");
-        if (this.options.sync) await this.changeRole(id, body.role as SyncRole);
+        if (this.sync) await this.changeRole(id, body.role as SyncRole);
         else { if (body.role !== "manual") this.manager.setManual(id, false); this.relay.setRole(id, body.role as SyncRole); }
       } else if (operation === "navigate") {
         if (typeof body.url !== "string") throw new Error("URL is required");
@@ -453,9 +513,9 @@ export class StakeModeWorkspace {
   private canControl(id: string): boolean {
     if (!this.authorized(id) || !this.manager.getProfile(id) || !this.manager.getLaunch(id)) return false;
     const profile = this.manager.getProfile(id)!, role = this.relay.configFor(id)?.role;
-    if (!this.options.sync) return profile.manual || role === "admin";
+    if (!this.sync) return profile.manual || role === "admin";
     try {
-      const session = this.options.sync.status();
+      const session = this.sync.status();
       if (session.followerIds.includes(id)) return false;
       if (session.adminId === id) return true;
       return role !== "follower";
@@ -599,26 +659,37 @@ export class StakeModeWorkspace {
       }
     }, 80);
   }
-  async stop(options: { closeBrowsers?: boolean; stopSync?: boolean } = {}): Promise<void> {
+  /** Stop transports and producers before the owner drains its HTTP listener. */
+  quiesce(): Promise<void> {
+    if (this.quiescing) return this.quiescing;
+    this.quiescing = this.quiesceOwnedTransports();
+    return this.quiescing;
+  }
+  private async quiesceOwnedTransports(): Promise<void> {
     this.shutdown = true;
-    if (options.stopSync !== false) await this.options.sync?.stop();
+    if (this.options.syncController === "relay") await this.sync?.suspend?.("Following is paused while GameBrowser closes; saved sessions resume only when requested");
     this.manager.beginShutdown?.();
     this.workflows.stop();
     this.unsubscribe();
+    await this.browserFollowing?.stop();
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.relay.stop();
     for (const socket of this.sockets) socket.close(1001, "Workspace stopping");
     this.sockets.clear();
+    await this.bridge.stop();
+  }
+  async stop(options: { closeBrowsers?: boolean; stopSync?: boolean } = {}): Promise<void> {
+    if (options.stopSync !== false) await this.sync?.stop();
+    await this.quiesce();
     if (options.closeBrowsers === false) {
-      await this.bridge.stop(); this.server?.stop(true); this.server = undefined;
+      this.server?.stop(true); this.server = undefined;
       this.dashboardTokens.clear(); this.manager.dispose(); return;
     }
     // No browser exists during initial warmup. Cancel its exact owned helper
     // before waiting for starts; active-browser teardown still needs collectors.
     let helpersStopped = true;
     if (!this.manager.list().some(p => this.manager.getLaunch(p.id))) helpersStopped = await windowsProcessScheduler.drain();
-    await this.bridge.stop();
     const ids = new Set([...this.manager.list().filter(p => this.manager.getLaunch(p.id)).map(p => p.id), ...(this.manager.pendingStartIds?.() ?? [])]);
     const results = await Promise.allSettled([...ids].map(id => this.manager.stop(id)));
     helpersStopped = await windowsProcessScheduler.drain() && helpersStopped;

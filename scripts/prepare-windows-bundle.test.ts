@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareWindowsBundle, WINDOWS_SIDECAR_TARGET } from "./prepare-windows-bundle.ts";
-import { MCP_MODE } from "../sidecar-entry.ts";
+import { dispatchSessionWorker, MCP_MODE } from "../sidecar-entry.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
 import { FIREFOX_EXTENSION_UI_PATCH_ID, type FirefoxExtensionUiPatchMetadata } from "./firefox-extension-ui-patch.ts";
 
@@ -74,6 +74,30 @@ test("one sidecar program also runs the MCP helper behind the aliasmode-mcp laun
   expect(JSON.parse(failed.stdout.toString())).toMatchObject({ ok: false });
 });
 
+test("the desktop sidecar starts the independent GameBrowser entry", () => {
+  const source = readFileSync(join(import.meta.dir, "..", "sidecar-entry.ts"), "utf8");
+  expect(source).toContain('import("./GameBrowser-cli.ts")');
+  expect(source).not.toContain('import("./cli.ts")');
+});
+
+test("the independent sidecar retains session worker dispatch without starting the application", async () => {
+  const events: string[] = [];
+  const deps = {
+    async readSession(endpoint: string) { expect(endpoint).toBe("ws://fixture"); return "private session fixture"; },
+    async write(value: string) { events.push(value); },
+    exit(code: number) { events.push(`exit:${code}`); },
+  };
+  expect(await dispatchSessionWorker(["start"], deps)).toBe(false);
+  expect(events).toEqual([]);
+  expect(await dispatchSessionWorker(["--read-session-worker", "ws://fixture"], deps)).toBe(true);
+  expect(events).toEqual([JSON.stringify({ ok: true, bundle: "private session fixture" }), "exit:0"]);
+
+  const child = Bun.spawnSync([process.execPath, "sidecar-entry.ts", "--read-session-worker"], { cwd: join(import.meta.dir, "..") });
+  expect(child.exitCode).toBe(1);
+  expect(JSON.parse(child.stdout.toString())).toEqual({ ok: false, error: "session capture worker requires a WebSocket endpoint" });
+  expect(child.stderr.toString()).toBe("");
+});
+
 function workspace(): string {
   const cwd = mkdtempSync(join(tmpdir(), "aliasmode-windows-bundle-"));
   mkdirSync(join(cwd, "src-tauri"), { recursive: true });
@@ -116,6 +140,13 @@ function workspace(): string {
     "workspace/server.test.ts": "exclude source tests",
     "extensions/stakemode-sync/manifest.json": '{"name":"sync"}',
     "extensions/stakemode-sync/content.js": "sync content",
+    "sdk/stakemode.ts": "TypeScript client",
+    "sdk/stakemode.py": "Python client",
+    "sdk/stakemode.test.ts": "exclude SDK tests",
+    "sdk/test_stakemode.py": "exclude Python SDK tests",
+    "sdk/__pycache__/stakemode.cpython-312.pyc": "exclude local Python bytecode",
+    "docs/STAKE-MODE-API.md": "Standalone API guide",
+    "docs/GAMEBROWSER-API.md": "GameBrowser API guide",
     "LICENSE": "license", "NOTICE": "notice",
   })) {
     const path = join(cwd, file); mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, content);
@@ -165,6 +196,13 @@ test("Windows bundle preparation packages owned Firefox with verified hashes and
     expect(readFileSync(join(liveRoot, "workspace", "helpers", "browserBridge.ts"), "utf8")).toBe("bridge");
     expect(existsSync(join(liveRoot, "workspace", "server.test.ts"))).toBe(false);
     expect(readFileSync(join(liveRoot, "extensions", "stakemode-sync", "content.js"), "utf8")).toBe("sync content");
+    expect(readFileSync(join(liveRoot, "sdk", "stakemode.ts"), "utf8")).toBe("TypeScript client");
+    expect(readFileSync(join(liveRoot, "sdk", "stakemode.py"), "utf8")).toBe("Python client");
+    expect(existsSync(join(liveRoot, "sdk", "stakemode.test.ts"))).toBe(false);
+    expect(existsSync(join(liveRoot, "sdk", "test_stakemode.py"))).toBe(false);
+    expect(existsSync(join(liveRoot, "sdk", "__pycache__"))).toBe(false);
+    expect(readFileSync(join(liveRoot, "docs", "STAKE-MODE-API.md"), "utf8")).toBe("Standalone API guide");
+    expect(readFileSync(join(liveRoot, "docs", "GAMEBROWSER-API.md"), "utf8")).toBe("GameBrowser API guide");
     expect(readFileSync(join(liveRoot, "notices", "NOTICE"), "utf8")).toBe("notice");
     const patchRoot = join(cwd, "src-tauri", "resources", "firefox", "gamebrowser-patches", "firefox-extension-ui");
     expect(JSON.parse(readFileSync(join(patchRoot, "APPLIED-PATCH.json"), "utf8"))).toEqual(patchMetadata);

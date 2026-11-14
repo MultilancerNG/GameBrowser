@@ -1,85 +1,75 @@
 # GameBrowser
 
-Windows browser profile workspace developed by **Solomon Gbeta — [solomon.ng](https://solomon.ng)**.
+An independent Windows browser workspace developed by **Solomon Gbeta — [solomon.ng](https://solomon.ng)**. GameBrowser upgrades the standalone StakeMode project, preserving its Live workspace, browser controls and local data model.
 
-GameBrowser adapts the complete Apache-2.0 [AliasMode desktop application](https://github.com/aliasmode/aliasmode), pinned to commit `0361bf4d4c53c993e5df80f1e7a2b6e9eb8a3538`. Upstream copyright notices, engine identities and licenses are preserved in LICENSE and NOTICE. This repository focuses on Windows x64 distribution.
+The independent upgrade is being validated on this branch. **Beta 82 remains the published installer until the new installed Windows gate passes.** [Downloads](https://github.com/MultilancerNG/GameBrowser/releases) · [Feature checklist](FEATURE_CHECKLIST.md)
 
-## Download
+## Independent application
 
-[Windows releases](https://github.com/MultilancerNG/GameBrowser/releases) · [Source](https://github.com/MultilancerNG/GameBrowser)
+`GameBrowser-cli.ts` starts the application's own loopback server, profile store, browser launcher, Live workspace and settings. Its normal runtime does not import the AliasMode host CLI, host web server, React dashboard or integration wrapper. Shared browser and service libraries retain their original licenses and engine identities.
 
-The cyber download page lives in `site/` and is published at `https://multilancerng.github.io/GameBrowser/`. Windows beta 82 has full and slim installers plus SHA-256 checksums in Releases. It includes the improved Live workspace and Full Admin View. Fresh installed Windows checks verify real Firefox frames and input, Chromium Admin / Firefox Follower actions, role colors, tabs, navigation, browser reopening, normal shutdown and uninstall. New versions are published only after the installed-app release gate passes.
+The baseline is the supplied `AliasMode-Game-stakemode-v0.1.0-preview.2.zip`, with certified browser/runtime fixes from GameBrowser beta 82. See [architecture and provenance](docs/INDEPENDENT-STAKEMODE-UPGRADE.md). The native application retains `ng.solomon.gamebrowser` as its identity so updates continue using existing GameBrowser data.
 
-## Features
+## Live workspace
 
-- **Local mode:** no account and no AliasMode Cloud connection. Profile data stays on this computer. Browser engine downloads and websites still use the network.
-- **Cloud sync:** retained AliasMode Cloud client, verified-account sign-in, shared workspaces, folder permissions, portable encrypted profile sync and device access controls. This requires an accessible compatible Cloud service. The hosted backend is separate from the public desktop source; this fork does not include or claim to operate it.
-- **Bulk delete:** select profiles across pages and choose Delete. Local and current Cloud mode move profiles to recoverable Trash; locked or failed profiles remain selected. Permanent purge is a separate action with workspace permission checks.
-- **Admin profile controls:** in Cloud mode, owners and admins can open a profile’s access menu to grant or revoke view/edit access. Folder grants apply to descendants; direct profile grants follow a profile when moved. Ordinary members cannot change profile or folder grants through the local API. The compatible Cloud service remains responsible for authoritative workspace authorization.
-- **Separate profile identities:** each newly created profile has its own ID, browser data directory and saved fingerprint seed. Creation checks stored seeds, including Trash, before deriving an identity. Imports and explicit fingerprint edits preserve the operator’s chosen identity. Cloud-wide uniqueness across other devices depends on the service.
-- **Per-profile fingerprints:** persistent identity seed, screen, platform, timezone, locale and supported engine hardware settings. Engine-specific fingerprint attestation is retained. CloakBrowser identities can be linked on one computer; prefer the upstream AliasMode engines for separate identities. These settings do not guarantee anonymity or an undetectable browser.
-- **Viewport presets:** desktop, iPhone-sized, Pixel-sized and tablet-sized screens, available in **Fingerprint settings** when creating or editing an existing profile. Custom dimensions remain editable. Save and relaunch a stopped profile to apply changes. Mobile sizes change screen dimensions; they do not change the operating system, user agent or touch capabilities to a mobile device.
-- **MCP and agent clients:** retained local MCP tools, agent integration, authenticated remote MCP connectors and Cloud tunnel lifecycle. Remote capabilities require the compatible Cloud service.
+The approved dark Live workspace opens directly. Local profiles work without an account. Configure approved websites, create or import profiles, and start the browser tiles. Tiles display actual browser pixels, with independent tabs, navigation, bookmarks, Full view and Full Admin View.
 
-Engine names, internal executable names (`aliasmode-sidecar`, `aliasmode-mcp`), protocol names and environment variables are retained for runtime compatibility. The desktop executable is `gamebrowser.exe`; the application, installer product and landing page are branded GameBrowser. Windows agent discovery uses the separate `ng.solomon.gamebrowser` data directory.
+Either Chromium or Firefox can be Admin. Choose Admin and followers explicitly, or enable **Auto-follow Admin selection**. Violet identifies Admin; teal identifies followers. Selecting a tile changes its position without changing an active following group. Drag handles and keyboard controls retain manual order.
 
-## Live workspace and profiles
+Following uses one controller. Supported clicks, text changes and scrolling replay independently; approved navigation and tab actions use the owned browser connections. Profiles retain separate cookies, storage and fingerprints. Sensitive interactions, uploads and operating-system dialogs require manual action. Page mismatches or unavailable browsers pause replay while retaining assigned roles. Reconnection sends future actions without replaying a backlog.
 
-Windows beta 82 includes the restored StakeMode Live workspace inside GameBrowser, with the current Cloud and MCP application retained. Beta 78 did not contain this workspace; install beta 82 to use the improved interface and browser controls.
+**Save session** retains the following plan. After reopening, choose **Resume saved session** explicitly; it does not launch browsers automatically. **Stop following** keeps browsers open. The original limit remains 256 profiles, with one Admin and up to 255 followers; practical capacity depends on the computer.
 
-Choose **GameBrowser Local** to run without an account, or use the compatible Cloud sign-in. A mode change can require an app restart. Once setup is ready, Live workspace opens by default. Use **Profiles** for the existing profile list and Cloud management, and **Settings & Cloud** for Team invitations, account/device settings and MCP. The Live workspace displays controllable Cloud profiles with current edit access; view-only entries remain available in Profiles.
+## Profiles and tools
 
-The grid shows real browser frames. **Full view** opens one profile with independent tabs, an address bar, navigation, bookmarks and fullscreen. **Full Admin View** expands the controlling profile; selecting another tile changes the view without changing assignments. Followers require explicit manual takeover before independent browser input. Configure the workspace's approved website origins and Fast/Paced dispatch; sensitive interactions remain manual in this workspace.
+- Create profiles and edit stopped identities, screen dimensions, locale, timezone and user agent.
+- Import/export supported TXT, CSV, JSON and XLSX data directly in the workspace. These preserve supported identities and saved sessions; they are not complete browser-folder backups.
+- Use recoverable Trash, restoration and separately confirmed permanent deletion.
+- Organize groups, tags, notes and bookmarks; copy configuration into fresh identities.
+- Inspect verified CPU/RAM measurements and use ownership-checked browser stop controls.
+- Choose Direct/System/Proxy routes; manage Chromium extensions and Firefox XPI add-ons.
+- Run bounded local workflows and schedules while the app stays open.
 
-Live workspace also restores profile groups, tags, notes, bookmarks, fresh-identity configuration copies, a CPU/RAM task manager, Direct/System/Proxy routes, local Chromium extensions and Firefox add-ons, and bounded local workflows/schedules. **Move selected to Trash** uses the existing recoverable bulk-delete path. A separately labelled permanent local delete retains its explicit confirmation. The complete requested-feature status is in [FEATURE_CHECKLIST.md](FEATURE_CHECKLIST.md), and architecture/provenance details are in [docs/LIVE-WORKSPACE-INTEGRATION.md](docs/LIVE-WORKSPACE-INTEGRATION.md).
+Per-profile **RAM budget, MB**, automatic allocation, optional **Auto optimize**, and **Always show bookmarks bar** apply at the next fresh launch. Saving preferences retains running sessions and following assignments. RAM budgets are soft targets, not physical reservations or total-process limits. Mobile-sized screens change dimensions without emulating a mobile operating system or touch hardware.
 
-Drag a profile’s handle to arrange profiles, or focus the handle and use Arrow Up / Arrow Down. Manual order is saved in the local database across application restarts, separately for Local mode and each signed-in Cloud account. It is a device preference, not a Cloud-synchronized workspace setting. Column sorting is still available; **Saved order** restores the manual layout.
+## Optional Cloud and Team
 
-Selecting a profile moves it to the top of the view. Before starting a sync group, the most recently selected profile is the candidate **Admin** (violet), with other selected profiles as **Followers** (teal). By default, those assignments and colors stay fixed once following starts. Clicking or deselecting a follower changes only the view selection. Use **Apply selection** to change the group, or **Stop following** to end it. Use the **Admin profile** selector to choose among selected Chromium profiles. The optional **Auto-follow Admin selection** setting makes the latest selected Chromium profile Admin and applies the other selected profiles as followers automatically. It starts off, resets when the app or account/workspace changes, and turns off when you choose Stop. Invalid or incomplete selections leave the current group intact. Cloud authorization still uses separate owner/admin/member account permissions.
+Settings provides compatible Cloud configuration, sign-in and explicit restoration of saved native sign-in. Local and Cloud have separate authenticated routes, stores and browser owners. Cloud access uses current service permissions. **Settings → Team** provides member invitations and profile/group view or edit grants.
 
-Open the profiles, choose a Chromium Admin and up to 20 Chromium or Firefox followers, then select **Start following**. Trusted clicks, text input, checkbox/select changes, standard keys, scrolling, and website navigation are replayed independently. Each browser retains its own cookies, login/session storage, and fingerprint. File uploads and operating-system dialogs are not replayed. Firefox can follow; trusted Admin capture currently requires Chromium.
+Cloud sessions retain the coordinator, encrypted pending-save queue and capture-before-close lifecycle. The compatible hosted backend is supplied separately. Simulated-service tests are identified in the checklist; live Cloud verification, remote MCP verification and the requested Sites/Cloudflare domain remain external setup.
 
-Use **Save session** (or the save-on-start option) to retain the Admin/follower choices in the local database. **Resume saved session** restores that group after an app restart; it does not launch browsers automatically. If a browser closes while a group is enabled, the group waits with its assignments intact and reconnects after the same profiles reopen. Reconnection sends future actions only, never replays old clicks or submissions. Pages that no longer match pause replay for attention. Stop ends the current group while retaining a saved plan; **Forget saved session** removes the plan without restarting an active group. Account changes or revoked access require fresh authorization.
+## SDK and existing data
 
-Saved sync groups contain only profile IDs and are isolated between Local mode and authorized Cloud accounts. Browser login/tab restoration continues to use each profile’s existing storage and close/open lifecycle.
+Original TypeScript/Python StakeMode SDK imports remain compatible, with additive GameBrowser names. The default is `http://127.0.0.1:8080`; a busy port is reported instead of adopting another service. See [GameBrowser API](docs/GAMEBROWSER-API.md) and [StakeMode API](docs/STAKE-MODE-API.md).
 
-## Import and export
+Existing beta 82 profiles and nested workspace metadata are reused in place. Settings → Data lists original StakeMode sources. Close both apps and review a full-state copy into a new empty destination:
 
-Use **Import** in Live workspace or **Import profiles** in the Profiles sidebar to upload supported TXT, CSV, JSON or XLSX exports, or paste a supported account export. Choose the destination group before importing. Imports preserve the supplied identity and session data; unsupported encrypted provider archives need a readable export first.
+```powershell
+bun GameBrowser-cli.ts import-state --source "PATH_TO_STAKEMODE" --state-root "NEW_EMPTY_FOLDER"
+# Review the plan, then repeat with --confirm-copy.
+```
 
-Use **Export** in Live workspace or **Export profiles** in the Profiles sidebar for selected profiles or the current filtered view. A profile’s edit dialog also offers **Export saved profile**. TXT and XLSX carry the supported saved identity/cookie fields; CSV exports account credentials. These readable exports are not full browser-directory backups. Exporting does not change the selection or following assignments. Cloud exports require edit access to every profile. Device-only resource preferences and saved following groups are not part of portable exports.
+The installed `aliasmode-sidecar.exe` accepts the same import arguments. The source stays unchanged, including identities, browser data, bookmarks, add-ons, proxies, workflows and schedules. Existing databases are never merged or overwritten.
 
-## Browser resource settings
+## Development and Windows builds
 
-Open a profile’s **Settings** in Live workspace, or its edit dialog in Profiles, to set **RAM budget, MB**, **Auto optimize**, and **Always show bookmarks bar**. Auto calculates a target from this device’s memory and the number of running profiles; manual targets accept 128–32768 MB. Optimization is opt-in and adjusts Chromium renderer heaps and caches, or Firefox’s memory cache. It is a soft target, not a total browser-process RAM limit or a reservation of physical memory. A renderer heap limit can be visible to websites.
-
-Settings are stored on this device and apply on the next fresh browser launch. Saving them leaves running browsers and following groups intact. The bookmarks option can retain the current behavior or explicitly choose an always-visible bar; existing native bookmarks are preserved. Live workspace renders its own saved profile-bookmark bar because headless browser frames do not include native browser chrome.
-
-## Windows development
-
-Install Bun **1.2.21**, Rust **1.89**, Visual Studio C++ Build Tools and the Windows SDK. Then:
+Install Bun **1.2.21**, Rust **1.89**, Visual Studio C++ Build Tools and the Windows SDK.
 
 ```powershell
 bun install --frozen-lockfile
 bun run typecheck
 bun test
-bun cli.ts start
+bun start
 ```
 
-The dashboard and Local API bind to loopback. Choose Local on first use to run without an account. Profiles use persistent SQLite and per-profile browser directories. Set `ALIASMODE_STATE_ROOT` to choose a separate state directory for source development.
+Use `GAMEBROWSER_STATE_ROOT` or `--state-root` for a separate source data folder; `STAKEMODE_STATE_ROOT` remains compatible. Native updates keep the established application data folder.
 
-## Build Windows installers
+The **GameBrowser Windows** workflow builds full/offline and slim installers with SHA-256 checksums. Publication requires Windows source checks and fresh installed-app tests of actual Chromium/Firefox controls, following, add-ons, saved-session reopening, MCP discovery, shutdown and uninstall. Tagged builds require reviewed notes in `release-notes/`. Downloads are promoted after the gate passes.
 
-Run **Actions → GameBrowser Windows → Run workflow**. It downloads the pinned upstream Firefox archive, verifies its published SHA-256, prepares the sidecar with verified baseline Bun, and builds full and slim NSIS installers with a checksum file. The release workflow gates publication on a fresh Windows install/start/Local-mode/MCP/shutdown/uninstall smoke check and the rendered installed Live workspace with a real bundled Firefox profile, live frames, input, tabs and navigation. The full installer bundles WebView2; the slim installer downloads it when required. The upstream engine archive must remain publicly available.
+## MCP
 
-The artifact is `gamebrowser-windows-x64`. For a prerelease, push a `v` tag matching the version in `src-tauri/tauri.conf.json` after checking the build. Tag builds publish installers and `SHA256SUMS.txt` to this repository's Releases. Installers are currently unsigned; Windows may show an unknown publisher prompt. Test installation, profile launch, update and uninstall on Windows before a public stable release.
-
-The retained signed updater points only to this repository's releases. Before enabling signed in-app update publication, replace the upstream updater public key in `src-tauri/tauri.conf.json` with a GameBrowser key and securely configure the corresponding signing key. Unsigned installers cannot be installed by the signed updater. Do not publish an upstream update manifest as a GameBrowser update.
-
-## MCP setup
-
-Use the installed `aliasmode-mcp.exe` helper for local agent clients; its name remains compatible with upstream tooling. The dashboard's MCP settings provide the supported agent configuration and Cloud connector setup. See the bundled `docs/` for API and MCP contracts. No Cloud credential is required in Local mode.
+The installed `aliasmode-mcp.exe` helper discovers the native runtime securely and supports local agent setup without Cloud. For example, `aliasmode-mcp.exe setup --client codex --yes` configures the selected supported client. Settings identifies the bridge; its private credential is not a dashboard token and is never stored in browser persistence. Remote capabilities require a compatible service and separate verification.
 
 ## Attribution
 
-GameBrowser modifications © 2026 Solomon Gbeta. AliasMode upstream © 2026 Xreacher. See [NOTICE](NOTICE), [LICENSE](LICENSE), and engine-specific licenses. GameBrowser is an independent adaptation and does not claim ownership of AliasMode's engines or hosted service.
+GameBrowser modifications © 2026 Solomon Gbeta. AliasMode upstream © 2026 Xreacher; the desktop baseline was pinned to `0361bf4d4c53c993e5df80f1e7a2b6e9eb8a3538`. See [NOTICE](NOTICE), [LICENSE](LICENSE) and engine-specific licenses. GameBrowser is independent of AliasMode's hosted service. Internal engine, executable and protocol names remain where required for compatibility.

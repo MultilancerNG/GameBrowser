@@ -1,4 +1,6 @@
-# GameBrowser Live workspace validation
+# Historical beta 82 Live workspace validation
+
+**Historical evidence:** the screenshots and results below cover beta 82 and its source work. They do not validate or depict every new standalone management flow. See [Independent StakeMode upgrade](INDEPENDENT-STAKEMODE-UPGRADE.md) for the current architecture and expanded Windows gate; new installed screenshots and results remain pending.
 
 These are actual source-app captures with isolated test profiles and live browser frames. They are not screenshots of private user accounts. Windows installed-app verification is a separate required release gate.
 

@@ -99,7 +99,7 @@ jobs:
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)" | Add-Content artifacts/windows/SHA256SUMS.txt
           }
-      - name: Smoke test installed Windows application
+      - name: Verify independent installed app and native StakeMode features
         shell: pwsh
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version

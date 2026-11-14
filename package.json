@@ -1,14 +1,14 @@
 {
   "name": "gamebrowser",
-  "version": "0.1.0-beta.82",
+  "version": "0.1.0-beta.83",
   "description": "Local-first browser profile manager with optional cloud synchronization",
-  "module": "cli.ts",
+  "module": "GameBrowser-cli.ts",
   "type": "module",
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
-    "start": "bun cli.ts start",
-    "serve": "bun cli.ts serve",
+    "start": "bun GameBrowser-cli.ts start",
+    "serve": "bun GameBrowser-cli.ts serve",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "docs:public": "bun scripts/generate-public-docs.mjs",

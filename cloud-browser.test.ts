@@ -89,6 +89,7 @@ function setup(options: {
   clearIntervalFn?: (handle: unknown) => void;
   watchPaths?: string[];
   watchPath?: (path: string, dirty: () => void) => { close(): void };
+  beforeLaunch?: (profile: Profile) => Promise<void>;
 } = {}) {
   const events: string[] = [];
   const logs: string[] = [];
@@ -302,6 +303,7 @@ function setup(options: {
     setIntervalFn: options.setIntervalFn,
     clearIntervalFn: options.clearIntervalFn,
     watchPath: options.watchPath,
+    beforeLaunch: options.beforeLaunch,
     log(message) {
       logs.push(message);
     },
@@ -634,6 +636,57 @@ test("Cloud browser imports one encoded batch without populating the Local store
   state.store.close();
 });
 
+
+test("Cloud prepares a newly materialized identity before its first native spawn", async () => {
+  const prepared: Profile[] = [];
+  const state = setup({ beforeLaunch: async profile => {
+    expect(state.store.getProfile(profile.id)).toEqual(profile);
+    expect(profile).toMatchObject({ id: "profile1", name: "Profile", fingerprintSeed: 1 });
+    expect(state.startCalls()).toBe(0);
+    prepared.push(profile); state.events.push("prepared");
+  } });
+  try {
+    expect(state.store.getProfile("profile1")).toBeNull();
+    expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+    expect(prepared).toHaveLength(1);
+    expect(state.events.indexOf("prepared")).toBeLessThan(state.events.indexOf("start"));
+  } finally { state.queue.close(); state.store.close(); }
+});
+
+test("Cloud preparation failure releases its registration without starting a native browser", async () => {
+  const state = setup({ beforeLaunch: async () => { throw new Error("Workspace access changed before preparing browser extensions"); } });
+  try {
+    expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(false);
+    expect(state.startCalls()).toBe(0);
+    expect(state.store.getLaunch("profile1")).toBeNull();
+    expect(state.abandonCalls()).toBe(1);
+    expect(state.queue.getOpen("profile1", "account1")).toBeNull();
+  } finally { state.queue.close(); state.store.close(); }
+});
+
+test("Cloud rechecks account authority after asynchronous preparation before native spawn", async () => {
+  let accountId = "account1", entered!: () => void, release!: () => void;
+  const preparing = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const state = setup({ accountId: () => accountId, beforeLaunch: async () => { entered(); await blocked; } });
+  try {
+    const opening = state.coordinator.open("profile1", ["--window-size=1200,800"]);
+    await preparing; accountId = "another-account"; release();
+    expect((await opening).ok).toBe(false);
+    expect(state.startCalls()).toBe(0);
+    expect(state.store.getLaunch("profile1")).toBeNull();
+  } finally { state.queue.close(); state.store.close(); }
+});
+
+test("Cloud repeats preparation after exact cleanup of a retained failed start", async () => {
+  let preparations = 0;
+  const state = setup({ startRetainedFailure: true, beforeLaunch: async () => { preparations++; } });
+  try {
+    expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+    expect(preparations).toBe(2);
+    expect(state.startCalls()).toBe(2);
+  } finally { state.queue.close(); state.store.close(); }
+});
 
 test("Cloud browser forwards the typed headless launch option", async () => {
   const state = setup({ expectedHeadless: true });

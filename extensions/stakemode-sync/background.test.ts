@@ -151,3 +151,17 @@ test('worker pause keeps the assigned follower role visible until explicit Manua
   socket.receive({ type: 'CONFIG', controller: 'worker', role: 'follower', origins: ['https://stake.com'], epoch: 3, paused: true });
   expect(h.message({ type: 'GET_STATE' }).role).toBe('follower'); expect(h.message({ type: 'GET_STATE' }).paused).toBe(true);
 });
+
+test('standalone retained assignments distinguish automatic page pause from explicit popup Manual', async () => {
+  const h = await harness({ preserveAssignments: true }); const socket = h.sockets[0]!; socket.open();
+  socket.receive({ type: 'CONFIG', preserveAssignments: true, role: 'follower', origins: ['https://stake.com'], epoch: 3 }); await tick();
+  h.message({ type: 'MANUAL_OVERRIDE', enabled: true, reason: 'Sensitive interaction requires manual control' });
+  expect(h.message({ type: 'GET_STATE' }).role).toBe('follower');
+  expect(h.message({ type: 'GET_STATE' }).paused).toBe(true);
+  expect(socket.packets.some(packet => packet.type === 'MANUAL_OVERRIDE' && packet.source === 'content-script')).toBe(true);
+  h.message({ type: 'MANUAL_OVERRIDE', enabled: true }, { url: 'chrome-extension://fixture/popup.html' });
+  expect(socket.packets.some(packet => packet.type === 'MANUAL_OVERRIDE' && packet.source === 'extension-popup')).toBe(true);
+  socket.close();
+  expect(h.message({ type: 'GET_STATE' }).role).toBe('follower');
+  expect(h.message({ type: 'GET_STATE' }).connected).toBe(false);
+});

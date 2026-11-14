@@ -1,4 +1,6 @@
-# Live workspace integration
+# Historical beta 82 Live workspace integration
+
+**Historical record:** this page describes the mounted-host architecture shipped in Windows beta 82. The independent GameBrowser upgrade replaces that approach; see [Independent StakeMode upgrade](INDEPENDENT-STAKEMODE-UPGRADE.md) for the current architecture and pending release gates. Statements below apply to beta 82, not the new standalone source.
 
 The original workspace was supplied as `AliasMode-Game-stakemode-v0.1.0-preview.2.zip`, SHA-256 `0cfee5999afba003ca10a731ee8ae9e1d6ef26f3b40d4258c33aeab1a9094776`. Its package identifies StakeMode `0.1.0-preview.2`; its provenance document identifies AliasMode base commit `3830cc4f8350b3b21e57dc962a182e7bdfdb3f05`. Those are properties of the supplied archive, not a claim that its historical release was independently verified.
 

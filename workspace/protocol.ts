@@ -14,7 +14,7 @@ export function relayEndpoint(value: unknown): string {
   const url = new URL(value);
   if (!["ws:", "wss:"].includes(url.protocol) || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
     || !Number.isInteger(Number(url.port || (url.protocol === "wss:" ? 443 : 80))) || Number(url.port || (url.protocol === "wss:" ? 443 : 80)) < 1 || Number(url.port || (url.protocol === "wss:" ? 443 : 80)) > 65535
-    || !["/relay", "/workspace/relay"].includes(url.pathname) || url.username || url.password || url.search || url.hash) {
+    || !["/relay", "/workspace/relay", "/workspace/cloud/relay"].includes(url.pathname) || url.username || url.password || url.search || url.hash) {
     throw new Error("Relay must use a validated loopback workspace endpoint");
   }
   return url.href;
@@ -26,6 +26,9 @@ export interface SyncProfileConfig {
   origins: string[];
   relayUrl: string;
   controller?: SyncController;
+  /** Keep assigned roles through transient transport and page failures. */
+  preserveAssignments?: boolean;
+  paused?: boolean;
   epoch: number;
 }
 export interface ManualControl {

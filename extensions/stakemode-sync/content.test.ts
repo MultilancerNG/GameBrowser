@@ -228,3 +228,16 @@ test('worker controller grants no second page observer or replay and accepts a d
     expect(JSON.parse(await readFile(join(directory, 'config.json'), 'utf8')).controller).toBe('worker');
   } finally { await rm(stateRoot, { recursive: true, force: true }); }
 });
+
+test('standalone keeps desired role during protective pause and never captures while paused', () => {
+  const h = harness(); h.configure('admin', 7, { preserveAssignments: true });
+  const control = new h.FakeElement('button', { 'data-testid': 'rules' }, 'Rules');
+  h.trigger('click', control);
+  expect(h.sent.filter(packet => packet.type === 'ACTION')).toHaveLength(1);
+  h.configure('admin', 8, { preserveAssignments: true, paused: true });
+  h.trigger('click', control);
+  expect(h.sent.filter(packet => packet.type === 'ACTION')).toHaveLength(1);
+  h.configure('admin', 9, { preserveAssignments: true });
+  h.trigger('click', control);
+  expect(h.sent.filter(packet => packet.type === 'ACTION')).toHaveLength(2);
+});

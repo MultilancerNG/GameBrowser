@@ -236,14 +236,19 @@ export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
   }
 }
 
-/** Original Live workspace assets and sync addon, beside the preserved MCP runtime. */
+/** Standalone workspace, sync addon and compatible clients beside the MCP runtime. */
 export function stageLiveWorkspaceRuntime(cwd: string, playwrightRoot: string): void {
   const root = join(playwrightRoot, "stakemode");
   mkdirSync(root, { recursive: true });
-  const runtimeFiles = (path: string) => !/\.test\.[cm]?[jt]sx?$/.test(path);
+  const runtimeFiles = (path: string) => !/(?:\.test\.[cm]?[jt]sx?$|(?:^|[/\\])test_[^/\\]*\.py$|(?:^|[/\\])__pycache__(?:[/\\]|$)|\.py[co]$)/.test(path);
   cpSync(join(cwd, "workspace"), join(root, "workspace"), { recursive: true, filter: runtimeFiles });
   mkdirSync(join(root, "extensions"), { recursive: true });
   cpSync(join(cwd, "extensions", "stakemode-sync"), join(root, "extensions", "stakemode-sync"), { recursive: true, filter: runtimeFiles });
+  cpSync(join(cwd, "sdk"), join(root, "sdk"), { recursive: true, filter: runtimeFiles });
+  mkdirSync(join(root, "docs"), { recursive: true });
+  for (const name of ["STAKE-MODE-API.md", "GAMEBROWSER-API.md"]) {
+    cpSync(join(cwd, "docs", name), join(root, "docs", name));
+  }
   mkdirSync(join(root, "notices"), { recursive: true });
   for (const name of ["LICENSE", "NOTICE"]) cpSync(join(cwd, name), join(root, "notices", name));
 }
@@ -323,7 +328,7 @@ export async function prepareWindowsBundle(
 if (import.meta.main) {
   try {
     const metadata = await prepareWindowsBundle();
-    console.log(`prepared AliasMode Windows bundle with Firefox SHA-256 ${metadata.firefox.sha256}`);
+    console.log(`prepared GameBrowser Windows bundle with Firefox SHA-256 ${metadata.firefox.sha256}`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
