@@ -24,10 +24,16 @@ State-dependent labels such as Apply selection, Forget saved session and Reconne
 
 ## Functional source verification
 
-- Full source regression: 2,363 passed, 11 skipped; additional focused bridge and transfer checks passed.
+- Beta 82 full source regression: 2,393 passed, 11 skipped; focused Firefox geometry, isolated deadlines and real WebSocket shutdown checks passed.
 - Eleven independent real Chromium protocol/session checks cover exact-once mirroring, separate cookies/URLs, closed-follower waiting/reconnect, saved tabs/storage, explicit pause, Stop without browser closure and explicit Resume after app restart.
 - Seven Cloud boundary checks use real browsers with a simulated service: uncached profile access, coordinator lifecycle, transient failure/reconnect, no replay, revoked grants and account isolation. These do not verify a live hosted Cloud service.
 - Actual source UI checks cover setup/reopen into Live workspace, Profiles/Settings navigation, recoverable multi-profile Trash, bookmarks, resource settings and four-selected-profile Export handoff without role changes or automatic download.
 - The committed Windows gate is `scripts/gamebrowser-installed-workspace-smoke.mjs`. It requires the installed UI, real bundled Firefox controls and a SHA256-pinned Chromium Admin controlling a Firefox Follower before publication.
 
 See [the complete feature checklist](../FEATURE_CHECKLIST.md) for shipped, source-verified and external pending work. Live Cloud/remote MCP, Sites publication and the custom domain remain separate external checks.
+
+## Installed Windows beta 82
+
+The [Windows release gate](https://github.com/MultilancerNG/GameBrowser/actions/runs/43529309393) passed before publication. It rendered the installed Live workspace, checked the exact violet Admin and teal Follower borders, exercised real bundled Firefox frames, clicks, typing, tabs and navigation, and verified Chromium Admin / Firefox Follower input, Stop without closing either browser, and following after Firefox reopened. Normal desktop close, sidecar cleanup and uninstall also passed. The smoke evidence includes an additional active-workspace screenshot captured before teardown.
+
+Firefox capture uses the effective content dimensions recorded for the running browser generation. The pinned Windows engine was separately tested at 1280×672, 320×152 and 390×796 content sizes; the saved screen identity remains unchanged. Shutdown quiesces owned UI/agent connections and waits for active HTTP/lifecycle work before browser capture and storage close.

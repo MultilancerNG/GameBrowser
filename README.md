@@ -8,7 +8,7 @@ GameBrowser adapts the complete Apache-2.0 [AliasMode desktop application](https
 
 [Windows releases](https://github.com/MultilancerNG/GameBrowser/releases) · [Source](https://github.com/MultilancerNG/GameBrowser)
 
-The cyber download page lives in `site/`. Its GitHub Pages workflow publishes to `https://multilancerng.github.io/GameBrowser/` after Pages is enabled with **GitHub Actions** as its source. Windows beta 78 has full and slim installers plus SHA-256 checksums in Releases, and has passed a fresh installed-app smoke check including Local MCP initialization, tool listing and agent discovery. It includes the latest following, import/export, and device-local browser resource controls. Newer source changes are released only after their Windows workflow passes. Installed-app validation is tracked separately from compilation.
+The cyber download page lives in `site/` and is published at `https://multilancerng.github.io/GameBrowser/`. Windows beta 82 has full and slim installers plus SHA-256 checksums in Releases. It includes the improved Live workspace and Full Admin View. Fresh installed Windows checks verify real Firefox frames and input, Chromium Admin / Firefox Follower actions, role colors, tabs, navigation, browser reopening, normal shutdown and uninstall. New versions are published only after the installed-app release gate passes.
 
 ## Features
 
@@ -25,7 +25,7 @@ Engine names, internal executable names (`aliasmode-sidecar`, `aliasmode-mcp`), 
 
 ## Live workspace and profiles
 
-The beta 82 source restores the original StakeMode Live workspace inside GameBrowser, with the current Cloud and MCP application retained. Beta 78 is the previous published installer and does not contain this workspace. The new installer is published only after the Windows release gate passes.
+Windows beta 82 includes the restored StakeMode Live workspace inside GameBrowser, with the current Cloud and MCP application retained. Beta 78 did not contain this workspace; install beta 82 to use the improved interface and browser controls.
 
 Choose **GameBrowser Local** to run without an account, or use the compatible Cloud sign-in. A mode change can require an app restart. Once setup is ready, Live workspace opens by default. Use **Profiles** for the existing profile list and Cloud management, and **Settings & Cloud** for Team invitations, account/device settings and MCP. The Live workspace displays controllable Cloud profiles with current edit access; view-only entries remain available in Profiles.
 

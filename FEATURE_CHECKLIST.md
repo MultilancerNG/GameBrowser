@@ -1,6 +1,6 @@
 # GameBrowser — complete requested feature checklist
 
-Checked items have been verified in the named build or surface. **Windows beta 78 is the current published installer.** Beta 82 source now includes the restored Live workspace and improved UI, verified through rendered-browser and protocol checks. Its installed Windows release gate and publication are still pending.
+Checked items have been verified in the named build or surface. **Windows beta 82 is the current published installer.** It includes the restored Live workspace and improved UI, verified through rendered-browser checks and the installed Windows release gate.
 
 ## Branding, Windows and delivery
 
@@ -8,15 +8,15 @@ Checked items have been verified in the named build or surface. **Windows beta 7
 - [x] Developed by Solomon Gbeta, with solomon.ng attribution and preserved upstream licenses.
 - [x] Source uploaded to MultilancerNG/GameBrowser on GitHub.
 - [x] Windows x64 full/offline and slim installers, with SHA-256 checksums.
-- [x] Beta 78 passed fresh installed-app startup, Local mode, Local MCP, agent discovery, shutdown and uninstall checks.
+- [x] Beta 82 passed fresh installed-app startup, Local mode, Local MCP, agent discovery, Live workspace/browser controls, shutdown and uninstall checks.
 - [x] Cyber-style download landing page and direct installer download.
 - [x] Removed landing-page GitHub/source navigation links.
-- [x] Updated the download page with feature descriptions, setup steps, FAQs and full/slim installer links, distinguishing the current release from the upcoming Live workspace update.
+- [x] Updated the download page with the included Live workspace functions, setup steps, FAQs, full/slim installer links and compatible Cloud service requirements.
 - [x] GitHub Pages deployment of the download page.
 - [ ] Publish the prepared site through Sites.
 - [ ] Assign and verify gamebrowser.fiam.dev through Sites and Cloudflare, including HTTPS.
 
-## Profiles and separate identities — shipped in beta 78
+## Profiles and separate identities — available in beta 82
 
 - [x] Local mode without an account or AliasMode Cloud connection; profile data stays on the computer.
 - [x] Separate profile browser directories, cookies, storage and saved identity settings.
@@ -31,7 +31,7 @@ Checked items have been verified in the named build or surface. **Windows beta 7
 - [x] TXT/XLSX preserve supported identity, cookies and session data; CSV exports supported account credentials.
 - [x] Cloud export requires edit access to every exported profile.
 
-## Admin, followers and sessions — shipped in beta 78 profile list
+## Admin, followers and sessions — available in beta 82 profile list
 
 - [x] Explicit Admin profile selector, with violet Admin and teal Follower role styling.
 - [x] Chromium Admin controls Chromium or Firefox followers using one mirroring worker.
@@ -45,7 +45,7 @@ Checked items have been verified in the named build or surface. **Windows beta 7
 - [x] Stop following detaches mirroring without closing the browser profiles.
 - [x] Account/access changes require current authorization before control resumes.
 
-## Browser settings — shipped in beta 78 profile editor
+## Browser settings — available in beta 82 profile editor
 
 - [x] RAM budget, MB: Auto or manual target from 128 to 32768 MB.
 - [x] Auto target uses available memory and counts running/reserved/concurrent profile starts.
@@ -56,7 +56,7 @@ Checked items have been verified in the named build or surface. **Windows beta 7
 
 These RAM values are soft targets, not a cap on total browser-process memory or a physical RAM reservation. Chromium's heap limit can be visible to websites. Mobile-sized presets change dimensions; they do not emulate a mobile OS or touch hardware.
 
-## Live workspace — implemented in beta 82 source; final Windows gate pending
+## Live workspace — shipped in Windows beta 82
 
 - [x] Make Live workspace prominent in GameBrowser and open it after the Local/Cloud setup flow.
 - [x] Restore live browser tiles with real frames, running state and per-profile controls.
@@ -78,8 +78,8 @@ These RAM values are soft targets, not a cap on total browser-process memory or 
 - [x] Preserve current Cloud authorization, sharing and MCP functionality alongside the workspace.
 - [x] Improved, consistent GameBrowser UI with legible controls, clear navigation and responsive layouts.
 - [x] Verify real browser frames, tabs, roles and follower actions through the rendered workspace.
-- [x] Candidate beta 81 installed Windows Live checks: Firefox frames/input/tabs, exact Admin/Follower colors, mixed Chromium Admin / Firefox Follower actions, Stop keeping both browsers alive and follower reopening. This candidate remains unpublished.
-- [ ] Pass normal desktop shutdown, sidecar cleanup and uninstall, then publish the validated installer.
+- [x] Installed Windows beta 82 Live checks: Firefox frames/input/tabs, exact Admin/Follower colors, mixed Chromium Admin / Firefox Follower actions, Stop keeping both browsers alive and follower reopening.
+- [x] Pass normal desktop shutdown, sidecar cleanup and uninstall, then publish the validated installer.
 
 ## Cloud, sharing, MCP and agents
 
@@ -96,18 +96,14 @@ Cloud creation, identity editing and sharing use the existing Profiles/Settings 
 
 ## Validation and remaining external setup
 
-- [x] Beta 78 source regression: 2,107 passed, 10 skipped; focused final UI/API/selection checks passed.
 - [x] Real Chromium following checks, including independent cookies and no replay after reconnect.
 - [x] Actual TXT/XLSX export→import checks preserve identity, credentials, cookies, localStorage and tabs.
-- [x] Beta 79 source regression: 2,363 passed, 11 skipped; focused follow-up native-bridge checks passed.
-- [x] Beta 80 source regression: 2,382 passed, 11 skipped; Firefox launch-geometry persistence, small viewports and existing-profile compatibility checked.
-- [x] Beta 81 source regression: 2,386 passed, 11 skipped; isolated Node checks verify active request and queued-inspection deadlines without unrelated process handles.
 - [x] Beta 82 source regression: 2,393 passed, 11 skipped; real WebSocket shutdown tests preserve active HTTP/lifecycle work, owned agent cleanup and browser capture ordering.
 - [x] Rendered desktop/mobile UI, actual source navigation, recoverable Trash and profile controls verified.
 - [x] Independent Local protocol acceptance: 11 real-browser checks, including exact-once following and saved session restore.
 - [x] Independent Cloud boundary acceptance: 7 checks with real browsers and a simulated service, including transient network recovery, revocation and account isolation.
 - [x] Visual concept comparison completed for Live grid and Full Admin View, with functional deviations documented.
-- [ ] Publish the next validated Windows installer and update the download page.
+- [x] Publish the validated Windows beta 82 installer and update the download page with its included UI and functions.
 - [ ] Configure a GameBrowser signing key before publishing signed in-app update manifests.
 
 The hosted Cloud backend is separate from the public desktop source. Sites/Cloudflare tools are unavailable in this session, and the custom domain is unverified. A network-access draft was saved but has not been applied; it requires review/save and Publish in Environment settings. No credentials were added to chat or source.
