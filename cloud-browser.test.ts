@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { CloudApiError } from "./cloud-client.ts";
 import { CloudBrowserCoordinator, watchBrowserStorage } from "./cloud-browser.ts";
 import type { OpenProfileResponse, PortableProfileV1 } from "./contracts/cloud-v1.ts";
@@ -2388,6 +2389,34 @@ test("Cloud heartbeat skips the full capture while storage watchers are live, ex
   state.store.close();
 });
 
+test.each(["failed", "missing"])("Cloud heartbeat captures when one storage watcher is %s while another remains live", async failure => {
+  const state = setup();
+  let failed = false, captures = 0;
+  const options = (state.coordinator as any).options;
+  (state.coordinator as any).storageCheckpoints = true;
+  options.launcher.browserStorageWatchPaths = () => ["cookies", "indexed-db"];
+  options.watchPath = (path: string) => {
+    if (failure === "missing" && path === "cookies") throw new Error("Native watcher unavailable");
+    return { get active() { return path !== "cookies" || !failed; }, close() {} };
+  };
+  options.setIntervalFn = () => ({ unref() {} }); options.clearIntervalFn = () => {};
+  options.readSession = async () => { captures++; return JSON.stringify({ ...payload().session, origins: [] }); };
+  try {
+    expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+    (state.coordinator as any).startDirtyMonitor("profile1");
+    if (failure === "failed") {
+      await state.coordinator.heartbeatOnce("profile1");
+      expect(captures).toBe(0);
+      failed = true;
+    }
+    await state.coordinator.heartbeatOnce("profile1");
+    expect(captures).toBe(1);
+    await state.coordinator.heartbeatOnce("profile1");
+    expect(captures).toBe(2);
+    await state.coordinator.close("profile1");
+  } finally { state.queue.close(); state.store.close(); }
+});
+
 test("Cloud heartbeat retires its capture watcher generation before reading storage", async () => {
   const state = setup();
   const storageDirty: Array<() => void> = [];
@@ -4685,6 +4714,39 @@ test("Cloud releaseAll closes several profiles at once", async () => {
   expect(peak).toBeLessThanOrEqual(4);
   state.queue.close();
   state.store.close();
+});
+
+test("native storage watcher errors retire the watcher and absorb queued errors after close", () => {
+  const root = mkdtempSync(join(tmpdir(), "gamebrowser-storage-error-"));
+  const native = new EventEmitter() as EventEmitter & { close(): void };
+  let closed = 0, changed = 0, onChange!: (event: string, file: string) => void;
+  native.close = () => { closed++; native.emit("close"); };
+  const factory = ((_path: unknown, _options: unknown, listener: typeof onChange) => { onChange = listener; return native; }) as typeof import("node:fs").watch;
+  const watcher = watchBrowserStorage(root, () => { changed++; }, factory);
+  try {
+    expect(watcher.active).toBe(true);
+    onChange("change", "000003.log"); expect(changed).toBe(1);
+    expect(() => native.emit("error", new Error("native storage directory disappeared"))).not.toThrow();
+    expect(watcher.active).toBe(false); expect(closed).toBe(1); expect(changed).toBe(2);
+    onChange("change", "late.log");
+    expect(() => native.emit("error", new Error("queued native close error"))).not.toThrow();
+    watcher.close(); expect(closed).toBe(1); expect(changed).toBe(2);
+  } finally { watcher.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native storage watcher close retires callbacks before a queued error or throwing close", () => {
+  const root = mkdtempSync(join(tmpdir(), "gamebrowser-storage-close-"));
+  const native = new EventEmitter() as EventEmitter & { close(): void };
+  let changed = 0, onChange!: (event: string, file: string) => void;
+  native.close = () => { throw new Error("native handle already closed"); };
+  const factory = ((_path: unknown, _options: unknown, listener: typeof onChange) => { onChange = listener; return native; }) as typeof import("node:fs").watch;
+  const watcher = watchBrowserStorage(root, () => { changed++; }, factory);
+  try {
+    expect(() => watcher.close()).not.toThrow(); expect(watcher.active).toBe(false);
+    onChange("change", "late.log");
+    expect(() => native.emit("error", new Error("queued error after close"))).not.toThrow();
+    native.emit("close"); expect(changed).toBe(0);
+  } finally { watcher.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("Chromium's own network state files do not mark a Cloud profile dirty; cookies and site storage do", async () => {

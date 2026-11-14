@@ -22,9 +22,16 @@ afterEach(async () => {
   for (const owner of owners.splice(0)) {
     // A simulated failed capture deliberately retains fake native ownership.
     // Fixture cleanup removes that record rather than probing a real process.
-    const internals = owner as unknown as { queue?: PendingSyncRuntime; store?: ProfileStore };
+    const internals = owner as unknown as {
+      queue?: PendingSyncRuntime;
+      store?: ProfileStore;
+      coordinator?: { stopHeartbeat(profileId: string): Promise<unknown> | null };
+    };
     const queue = internals.queue?.queue();
     for (const open of queue?.listAllOpens() ?? []) {
+      // A failed capture starts real storage watchers. Stop this fixture's
+      // producers before removing its simulated native generation and folders.
+      await internals.coordinator?.stopHeartbeat(open.profileId)?.catch(() => {});
       queue!.removeUnreadyCaptures(open.profileId, open.accountId, open.registrationId);
       queue!.removeOpenRegistration(open.profileId, open.accountId, open.registrationId);
       internals.store?.clearLaunch(open.profileId);

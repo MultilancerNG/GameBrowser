@@ -17,3 +17,9 @@ MIT License. The full license text is in firefox-data/LICENSE.
 GameBrowser adaptation developed by Solomon Gbeta (https://solomon.ng).
 Based on aliasmode/aliasmode commit 0361bf4d4c53c993e5df80f1e7a2b6e9eb8a3538.
 Modifications: GameBrowser branding, viewport preset selector, Windows distribution and landing page, admin sharing checks, stored fingerprint seed collision checks, Windows MCP discovery, persistent profile arrangement, Admin/Follower selection styling, trusted browser action following, and saved sync sessions.
+
+The independent GameBrowser application also upgrades the supplied standalone
+StakeMode 0.1.0-preview.2 project. Its original SDK contracts, workspace functions
+and licensed browser libraries are retained alongside GameBrowser's own entry,
+settings, profile transfers, state import and optional Cloud composition.
+Source archive SHA-256: 0cfee5999afba003ca10a731ee8ae9e1d6ef26f3b40d4258c33aeab1a9094776.

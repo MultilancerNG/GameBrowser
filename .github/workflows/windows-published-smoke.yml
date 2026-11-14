@@ -1,15 +1,10 @@
 name: Validate published Windows installer
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/windows-published-smoke.yml'
-      - 'scripts/gamebrowser-windows-smoke.ps1'
   workflow_dispatch:
     inputs:
       version:
         description: Published GameBrowser version to validate
-        default: '0.1.0-beta.76'
+        default: '0.1.0-beta.82'
         required: true
         type: string
 permissions:
@@ -19,12 +14,26 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
+      - name: Resolve the requested published release
+        id: published
+        shell: pwsh
+        env:
+          SMOKE_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SMOKE_VERSION -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid published version' }
+          "version=$env:SMOKE_VERSION" >> $env:GITHUB_OUTPUT
+          "tag=v$env:SMOKE_VERSION" >> $env:GITHUB_OUTPUT
       - uses: actions/checkout@v4
+        with:
+          # Historical installers must run the acceptance script from their own
+          # immutable source tag, rather than the latest unreleased application.
+          ref: ${{ steps.published.outputs.tag }}
       - name: Download published full installer and checksums
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          SMOKE_VERSION: ${{ inputs.version || '0.1.0-beta.76' }}
+          SMOKE_VERSION: ${{ steps.published.outputs.version }}
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:SMOKE_VERSION -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid published version' }
@@ -34,7 +43,7 @@ jobs:
       - name: Validate installed application
         shell: pwsh
         env:
-          SMOKE_VERSION: ${{ inputs.version || '0.1.0-beta.76' }}
+          SMOKE_VERSION: ${{ steps.published.outputs.version }}
         run: |
           ./scripts/gamebrowser-windows-smoke.ps1 `
             -InstallerPath "artifacts/windows/GameBrowser_$($env:SMOKE_VERSION)_x64-offline-setup.exe" `

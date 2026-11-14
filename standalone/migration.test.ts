@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { detectStateImportCandidates, getStateImportStatus, importState, planStateImport, type StateImportOptions } from "./migration.ts";
@@ -76,7 +76,12 @@ test("destination contents, nested roots and source links cannot be overwritten 
   const external = join(root, "outside"); mkdirSync(external); write(external, "private.txt", "never follow");
   symlinkSync(external, join(source, "linked"), process.platform === "win32" ? "junction" : "dir");
   await expect(planStateImport(source, join(root, "clean"), stopped)).rejects.toThrow("symbolic link");
-  rmSync(join(source, "linked"));
+  // Windows junctions are directory reparse points; remove only the link with
+  // RemoveDirectory rather than treating it as a regular file or traversing it.
+  if (process.platform === "win32") rmdirSync(join(source, "linked"));
+  else unlinkSync(join(source, "linked"));
+  expect(existsSync(join(source, "linked"))).toBe(false);
+  expect(readFileSync(join(external, "private.txt"), "utf8")).toBe("never follow");
   const linkedSource = join(root, "alias"); symlinkSync(source, linkedSource, process.platform === "win32" ? "junction" : "dir");
   await expect(planStateImport(linkedSource, join(root, "clean"), stopped)).rejects.toThrow("junctions");
   linkSync(join(source, "config.json"), join(source, "hard-linked-config"));

@@ -167,7 +167,7 @@ export interface CloudBrowserOptions {
   cloudCheckpointIntervalMs?: number;
   /** After a login, logout or account switch, save to Cloud once this long after the last save. */
   cloudCheckpointSoonMs?: number;
-  watchPath?: (path: string, onDirty: () => void) => { close(): void };
+  watchPath?: (path: string, onDirty: () => void) => BrowserStorageWatcher;
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
   log?: (message: string) => void;
@@ -211,13 +211,38 @@ const CAPTURE_KEPT_OPEN_ERROR =
  * logins: Chromium rewrites its own network state there (Network Persistent State, Reporting and
  * NEL, TransportSecurity) every 20 to 60 s on an idle profile, which would checkpoint as often.
  */
-export function watchBrowserStorage(path: string, dirty: () => void): { close(): void } {
+export interface BrowserStorageWatcher {
+  /** Missing is retained for injected watchers that predate native health reporting. */
+  readonly active?: boolean;
+  close(): void;
+}
+
+export function watchBrowserStorage(path: string, dirty: () => void, watchPath: typeof watch = watch): BrowserStorageWatcher {
   // A new profile creates these folders at its first write; watching must not miss that write.
   mkdirSync(path, { recursive: true });
   const cookiesOnly = basename(path) === "Network";
-  return watch(path, { recursive: true }, (_event, file) => {
-    if (!cookiesOnly || !file || basename(String(file)).startsWith("Cookies")) dirty();
+  let active = true;
+  const watcher = watchPath(path, { recursive: true }, (_event, file) => {
+    if (active && (!cookiesOnly || !file || basename(String(file)).startsWith("Cookies"))) dirty();
   });
+  const close = () => {
+    if (!active) return;
+    active = false;
+    try { watcher.close(); } catch { /* A failed native watcher remains inactive. */ }
+  };
+  // fs.watch can fail asynchronously after a directory disappears or its
+  // handle closes. Keep the error listener installed for already queued events.
+  watcher.on("error", () => {
+    if (!active) return;
+    close();
+    dirty();
+  });
+  watcher.on("close", () => {
+    if (!active) return;
+    active = false;
+    dirty();
+  });
+  return { get active() { return active; }, close };
 }
 
 /** A conflict Cloud will never accept, unlike a close that only lost its lease. */
@@ -238,7 +263,8 @@ interface CloudDirtyMonitor {
   debugPort: number;
   startedAt: number;
   debounceTimer?: ReturnType<typeof setTimeout>;
-  watchers: Array<{ close(): void }>;
+  watchers: BrowserStorageWatcher[];
+  expectedWatchers: number;
   watcherGeneration: number;
   dirty: boolean;
   captureInFlight: boolean;
@@ -1976,7 +2002,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     // A full capture spawns a Playwright helper. With live storage watchers, every 60 s per
     // browser was redundant load; still upload what the watchers captured.
     const monitor = this.dirtyMonitors.get(profileId);
-    if (monitor?.registrationId === registrationId && monitor.watchers.length > 0
+    if (monitor?.registrationId === registrationId && this.hasActiveStorageWatchers(monitor)
       && ++monitor.heartbeats % HEARTBEAT_FULL_CAPTURE_EVERY !== 0) {
       await this.uploadCheckpoint(open, context.queue);
       return;
@@ -2469,6 +2495,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       debugPort: launch.debugPort,
       startedAt: launch.startedAt,
       watchers: [],
+      expectedWatchers: 0,
       watcherGeneration: 0,
       dirty: false,
       captureInFlight: false,
@@ -2477,13 +2504,22 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     };
     this.dirtyMonitors.set(profileId, monitor);
     this.startStorageWatchers(profileId, monitor);
-    if (monitor.watchers.length === 0) this.diagnosticEvents.record("dirty_monitor_unavailable");
+    if (!this.hasActiveStorageWatchers(monitor)) this.diagnosticEvents.record("dirty_monitor_unavailable");
+  }
+
+  private hasActiveStorageWatchers(monitor: CloudDirtyMonitor): boolean {
+    // Losing even one folder can hide a login change there. Retain heartbeat
+    // capture until every requested storage directory is watched again.
+    return monitor.watchers.length > 0 && monitor.watchers.length === monitor.expectedWatchers
+      && monitor.watchers.every(watcher => watcher.active !== false);
   }
 
   private startStorageWatchers(profileId: string, monitor: CloudDirtyMonitor): void {
     const watchPath = this.options.watchPath ?? watchBrowserStorage;
     const generation = ++monitor.watcherGeneration;
-    for (const path of this.options.launcher.browserStorageWatchPaths(profileId)) {
+    const paths = this.options.launcher.browserStorageWatchPaths(profileId);
+    monitor.expectedWatchers = paths.length;
+    for (const path of paths) {
       try {
         monitor.watchers.push(watchPath(path, () => {
           if (monitor.watcherGeneration !== generation) return;
@@ -2497,6 +2533,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
 
   private stopStorageWatchers(monitor: CloudDirtyMonitor): void {
     monitor.watcherGeneration++;
+    monitor.expectedWatchers = 0;
     for (const watcher of monitor.watchers.splice(0)) {
       try { watcher.close(); } catch {}
     }
